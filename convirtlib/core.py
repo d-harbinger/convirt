@@ -236,7 +236,7 @@ def read_state(root):
                             "click to hold pointer; Ctrl+Alt+G releases")
     elif kind == "spice":
         state["display"] = ("spice", True,
-                            "inside virt-manager; clipboard shared")
+                            "inside virt-manager")
     else:
         state["display"] = (kind, True, "display type: %s" % kind)
 
