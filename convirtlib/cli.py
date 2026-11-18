@@ -1,7 +1,12 @@
 """Command line: open the window, or read and flip switches from a shell.
 
     convirt                       open the window
+    convirt open VM [URI]         open the window on one VM
     convirt list                  list the VMs
+    convirt start VM              start a VM
+    convirt stop VM               ask a VM to shut down, as its power button
+    convirt off VM                power a VM off at once
+    convirt check VM              check whether its 3D acceleration works
     convirt show VM               show every switch of one VM
     convirt set VM SWITCH VALUE   change one switch
     convirt undo VM               restore the config before the last change
@@ -42,14 +47,27 @@ def main(argv=None):
     manager = Manager(backend, backups)
 
     try:
-        if not args:
+        if not args or args[0] == "open" and len(args) in (2, 3):
             try:
                 from . import ui
             except (ImportError, ValueError):
                 print("The window needs GTK 3 for Python (PyGObject).")
                 print("The commands still work: convirt list")
                 return 1
-            ui.run(manager, snapshot, change)
+            initial = None
+            if args:
+                initial = (args[1], args[2] if len(args) == 3 else None)
+            ui.run(manager, snapshot, change, initial)
+        elif len(args) == 2 and args[0] in ("start", "stop", "off"):
+            vm = manager.find(args[1])
+            {"start": manager.start, "stop": manager.shutdown,
+             "off": manager.force_off}[args[0]](vm)
+            print({"start": "started", "stop": "asked to shut down",
+                   "off": "powered off"}[args[0]])
+        elif len(args) == 2 and args[0] == "check":
+            verdict, text = manager.check_3d(manager.find(args[1]))
+            print(text, end="")
+            return 0 if verdict in ("working", "off") else 1
         elif args == ["list"]:
             for vm in manager.list():
                 print("%-24s %s" % (vm.label,

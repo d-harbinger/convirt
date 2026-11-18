@@ -5,10 +5,11 @@ directory of XML files as the set of VMs so the rest of the program can
 be tested and drawn without libvirt.
 """
 import os
+import shutil
 import subprocess
 import time
 
-from . import core
+from . import check, core
 
 URIS = ("qemu:///session", "qemu:///system")
 KEEP_BACKUPS = 20
@@ -80,6 +81,16 @@ class Libvirt:
 
     def render_nodes(self, vm):
         return render_nodes(system=not vm.session)
+
+    def power(self, vm, action):
+        """start, shutdown (as the power button would) or destroy (off)."""
+        result = self._virsh(vm.uri, action, vm.name)
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip())
+
+    def is_running(self, vm):
+        result = self._virsh(vm.uri, "domstate", vm.name, readonly=True)
+        return result.stdout.strip() == "running"
 
     def network_names(self, vm):
         result = self._virsh(vm.uri, "net-list", "--all", "--name",
@@ -167,6 +178,22 @@ class Files:
     def render_nodes(self, vm):
         return self.render
 
+    def power(self, vm, action):
+        """Starting copies the stored definition to the live one; a shut
+        down or power off removes it, so the VM reads as shut off."""
+        live = self._path(vm, live=True)
+        if action == "start":
+            with open(self._path(vm)) as source, open(live, "w") as target:
+                target.write(source.read())
+        elif action in ("shutdown", "destroy"):
+            if os.path.exists(live):
+                os.remove(live)
+        else:
+            raise RuntimeError("unknown action: %s" % action)
+
+    def is_running(self, vm):
+        return os.path.exists(self._path(vm, live=True))
+
     def network_names(self, vm):
         directory = os.path.join(self.directory, "networks")
         if not os.path.isdir(directory):
@@ -207,9 +234,12 @@ def state_dir():
 
 
 class Manager:
-    def __init__(self, backend, backups=None):
+    def __init__(self, backend, backups=None, check_paths=None):
         self.backend = backend
         self.backups = backups or state_dir()
+        # Where the 3D check looks for processes, the home folder and the
+        # QEMU modules; tests point them at a temporary folder.
+        self.check_paths = check_paths or {}
 
     def list(self):
         """Running VMs first, then by name."""
@@ -255,6 +285,57 @@ class Manager:
         if current not in keys and current != "?":
             keys.append(current)
         return [(k, core.connection_label(k, modes)) for k in keys]
+
+    # --------------------------------------------------------- lifecycle
+
+    def start(self, vm):
+        self.backend.power(vm, "start")
+        vm.running = True
+
+    def shutdown(self, vm):
+        """Ask the guest to shut down, as its power button would."""
+        self.backend.power(vm, "shutdown")
+
+    def force_off(self, vm):
+        self.backend.power(vm, "destroy")
+        vm.running = False
+
+    def refresh_running(self, vm):
+        vm.running = self.backend.is_running(vm)
+        return vm.running
+
+    def check_3d(self, vm, write=True):
+        """(verdict, text) of the 3D check; the text is also saved."""
+        root = self.stored(vm)
+        state = core.read_state(root)
+        render = self.backend.render_nodes(vm)
+        verdict, lines = check.check(
+            state, core.gl_uses(root), vm.name, vm.session,
+            self.refresh_running(vm), render, **self.check_paths)
+        text = check.report(vm.label, verdict, lines)
+        if write:
+            self._write_private(self.check_file(vm), text)
+        return verdict, text
+
+    def check_file(self, vm):
+        """Where the last 3D check of a VM is saved."""
+        safe = "".join(c if c.isalnum() or c in "-_." else "_"
+                       for c in vm.name)
+        kind = "session" if vm.session else "system"
+        return os.path.join(self.backups, "3d-%s-%s.txt" % (kind, safe))
+
+    def open_screen(self, vm):
+        """Show a running VM's screen in virt-viewer or virt-manager."""
+        for command in (
+                ["virt-viewer", "--connect", vm.uri, "--wait", "--", vm.name],
+                ["virt-manager", "--connect", vm.uri,
+                 "--show-domain-console", vm.name]):
+            if shutil.which(command[0]):
+                subprocess.Popen(command, start_new_session=True,
+                                 stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
+                return
+        raise RuntimeError("install virt-viewer or virt-manager to see it")
 
     def live_values(self, vm):
         """The running VM's switch values, or None when it is shut off."""

@@ -151,6 +151,20 @@ def _has_gl_display(root):
     return False
 
 
+def gl_uses(root):
+    """The parts of QEMU the 3D path of this definition needs, by name."""
+    uses = {"virgl"}
+    model = _video_model(root)
+    if model is not None and model.get("device") == "virtio-vga-gl":
+        uses.add("virtio-vga-gl")
+    kind = display_kind(root)
+    if kind in ("sdl", "gtk", "spice"):
+        uses.add(kind)
+    if any(g.get("type") == "egl-headless" for g in _graphics(root)):
+        uses.add("egl-headless")
+    return uses
+
+
 def _video_model(root):
     return _devices(root).find("video/model")
 

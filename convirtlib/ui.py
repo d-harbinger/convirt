@@ -50,12 +50,15 @@ ICONS = {
 }
 CHOOSERS = ("display", "network")
 BANNER_SECONDS = 7
+# How long a guest gets to power off before Force off is offered.
+SHUTDOWN_SECONDS = 60
 
 
 class Window(Gtk.Window):
-    def __init__(self, manager):
+    def __init__(self, manager, initial=None):
         super().__init__(title="convirt")
         self.manager = manager
+        self.initial = initial
         self.vms = []
         self.vm = None
         self.loading = False
@@ -64,6 +67,9 @@ class Window(Gtk.Window):
         self.badges = {}
         self.lines = {}
         self.banner_timer = None
+        # While a restart runs: the seconds left before Force off is offered.
+        self.restarting = None
+        self.start_after = False
         self.set_default_size(520, -1)
         self.set_border_width(18)
 
@@ -81,6 +87,12 @@ class Window(Gtk.Window):
         self.picker = Gtk.ComboBoxText()
         self.picker.connect("changed", self.on_pick)
         header.pack_start(self.picker, False, False, 0)
+        self.open_button = Gtk.Button(label="Open")
+        self.open_button.connect("clicked", self.on_open)
+        header.pack_end(self.open_button, False, False, 0)
+        self.power = Gtk.Button(label="Start")
+        self.power.connect("clicked", self.on_power)
+        header.pack_end(self.power, False, False, 0)
         self.running = Gtk.Label()
         self.running.get_style_context().add_class("convirt-pill")
         self.running.set_valign(Gtk.Align.CENTER)
@@ -101,9 +113,16 @@ class Window(Gtk.Window):
             for name in names:
                 rows.add(self.build_row(name))
 
-        self.waiting = Gtk.Label(xalign=0)
-        self.waiting.set_line_wrap(True)
+        self.waiting = Gtk.Box(spacing=10)
         self.waiting.get_style_context().add_class("convirt-waiting")
+        self.waiting_text = Gtk.Label(xalign=0)
+        self.waiting_text.set_line_wrap(True)
+        self.waiting.pack_start(self.waiting_text, True, True, 0)
+        self.apply_button = Gtk.Button(label="Restart to apply")
+        self.apply_button.get_style_context().add_class("suggested-action")
+        self.apply_button.set_valign(Gtk.Align.CENTER)
+        self.apply_button.connect("clicked", self.on_apply)
+        self.waiting.pack_end(self.apply_button, False, False, 0)
         box.pack_start(self.waiting, False, False, 0)
 
         self.attached = Gtk.Label(xalign=0)
@@ -159,7 +178,8 @@ class Window(Gtk.Window):
         line.pack_start(text, True, True, 0)
         self.banner_undo = Gtk.Button(label="Undo")
         self.banner_undo.set_valign(Gtk.Align.CENTER)
-        self.banner_undo.connect("clicked", self.on_undo)
+        self.banner_undo.connect("clicked", self.on_banner_action)
+        self.banner_action = self.on_undo
         line.pack_end(self.banner_undo, False, False, 0)
         self.banner_line = line
         self.banner.add(line)
@@ -189,6 +209,14 @@ class Window(Gtk.Window):
         text.pack_start(meaning, False, False, 0)
         line.pack_start(text, True, True, 0)
 
+        if name == "accel3d":
+            details = Gtk.Button(label="Details")
+            details.get_style_context().add_class("flat")
+            details.set_valign(Gtk.Align.CENTER)
+            details.connect("clicked", self.on_check)
+            line.pack_end(details, False, False, 0)
+            self.details = details
+
         if name in CHOOSERS:
             control = Gtk.ComboBoxText()
             control.connect("changed", self.on_choose, name)
@@ -206,7 +234,20 @@ class Window(Gtk.Window):
 
     # ------------------------------------------------------------ feedback
 
-    def announce(self, title, detail="", failed=False, undo=False):
+    def on_banner_action(self, button):
+        self.banner_action(button)
+
+    def announce(self, title, detail="", failed=False, undo=False,
+                 action=None):
+        """Show the banner. undo offers Undo; action is (label, callback)
+        for any other single follow-up, such as Force off."""
+        if action:
+            self.banner_undo.set_label(action[0])
+            self.banner_action = action[1]
+            undo = True
+        else:
+            self.banner_undo.set_label("Undo")
+            self.banner_action = self.on_undo
         style = self.banner_line.get_style_context()
         style.remove_class("done" if failed else "failed")
         style.add_class("failed" if failed else "done")
@@ -258,7 +299,12 @@ class Window(Gtk.Window):
             self.waiting.hide()
             return
         labels = [vm.label for vm in self.vms]
-        self.picker.set_active(labels.index(keep) if keep in labels else 0)
+        index = labels.index(keep) if keep in labels else 0
+        if keep is None and self.initial:
+            name, uri = self.initial
+            index = next((i for i, vm in enumerate(self.vms)
+                          if vm.name == name and uri in (None, vm.uri)), 0)
+        self.picker.set_active(index)
 
     def set_sensitive_rows(self, sensitive):
         for control in list(self.controls.values()) + self.extras:
@@ -271,6 +317,7 @@ class Window(Gtk.Window):
         if self.vm is None:
             return
         try:
+            self.manager.refresh_running(self.vm)
             state = self.manager.state(self.vm)
             pending = self.manager.pending(self.vm)
             live = self.manager.live_values(self.vm)
@@ -314,6 +361,8 @@ class Window(Gtk.Window):
             control.set_sensitive(entry["enabled"])
             waiting = name in pending
             meaning = entry["meaning"]
+            if name == "accel3d":
+                meaning = self.verdict_text(meaning)
             if waiting and live:
                 labels = dict(choices.get(name, ()))
                 running = labels.get(live[name], live[name])
@@ -334,15 +383,39 @@ class Window(Gtk.Window):
             self.running.set_text("Shut off")
             pill.remove_class("running")
             pill.add_class("off")
+        busy = self.restarting is not None
+        self.power.set_label("Shut down" if self.vm.running else "Start")
+        self.power.set_sensitive(not busy)
+        own = state["display"]["value"] in core.OWN_WINDOW
+        self.open_button.set_sensitive(not own and not busy)
+        self.open_button.set_tooltip_text(
+            "An own-window display opens when the VM starts" if own
+            else "Show the VM's screen in virt-manager")
         self.undo.set_sensitive(self.manager.can_undo(self.vm))
         if pending:
-            self.waiting.set_text(
-                "Waiting for a full shut down and start: %s. "
-                "A restart inside the guest is not enough." %
-                ", ".join(core.TITLES[n] for n in pending))
-            self.waiting.show()
+            self.waiting_text.set_text(
+                "%s for a full shut down and start: %s" % (
+                    "1 change waits" if len(pending) == 1
+                    else "%d changes wait" % len(pending),
+                    ", ".join(core.TITLES[n] for n in pending)))
+            self.apply_button.set_sensitive(not busy)
+            self.waiting.show_all()
         else:
             self.waiting.hide()
+
+    def verdict_text(self, meaning):
+        """The 3D row's line: the setting, then what the check found."""
+        try:
+            verdict, text = self.manager.check_3d(self.vm, write=False)
+        except RuntimeError:
+            return meaning
+        if verdict == "working":
+            return "✓ working in QEMU · " + meaning
+        if verdict == "not working":
+            reason = next((line[5:].strip() for line in text.splitlines()
+                           if line.startswith("FAIL")), "")
+            return "✗ not working: " + " ".join(reason.split())
+        return meaning
 
     # ----------------------------------------------------------- handlers
 
@@ -380,6 +453,122 @@ class Window(Gtk.Window):
         else:
             detail = "Saved. Applies when the VM starts."
         self.announce(title, detail, undo=True)
+
+    # ---------------------------------------------------------- lifecycle
+
+    def on_power(self, _button):
+        if self.vm.running:
+            self.shut_down(start_after=False)
+        else:
+            self.start_vm()
+
+    def on_apply(self, _button):
+        self.shut_down(start_after=True)
+
+    def start_vm(self):
+        try:
+            self.manager.start(self.vm)
+        except RuntimeError as error:
+            self.reload()
+            self.announce("Did not start", str(error), failed=True)
+            return
+        self.reload()
+        self.announce("Starting " + self.vm.label)
+        # QEMU writes its log and opens its display in the first seconds.
+        GLib.timeout_add_seconds(4, self.after_start)
+
+    def after_start(self):
+        self.reload()
+        verdict, _text = self.manager.check_3d(self.vm)
+        detail = "The running VM now matches these settings."
+        if verdict == "working":
+            detail += " 3D is working in QEMU."
+        elif verdict == "not working":
+            detail += " 3D is not working; Details on its row says why."
+        self.announce("Started " + self.vm.label, detail,
+                      failed=verdict == "not working")
+        return False
+
+    def shut_down(self, start_after):
+        try:
+            self.manager.shutdown(self.vm)
+        except RuntimeError as error:
+            self.reload()
+            self.announce("Did not shut down", str(error), failed=True)
+            return
+        self.restarting = SHUTDOWN_SECONDS
+        self.start_after = start_after
+        self.picker.set_sensitive(False)
+        self.reload()
+        self.announce("Shutting down " + self.vm.label,
+                      "Waiting for the guest to power off")
+        GLib.timeout_add_seconds(1, self.poll_shutdown)
+
+    def poll_shutdown(self):
+        if not self.manager.refresh_running(self.vm):
+            self.finish_shutdown()
+            return False
+        self.restarting -= 1
+        if self.restarting > 0:
+            return True
+        self.restarting = None
+        self.picker.set_sensitive(True)
+        self.reload()
+        self.announce(
+            "Still running after %d s" % SHUTDOWN_SECONDS,
+            "The guest did not power off. Force off cuts its power, "
+            "like pulling the plug.", failed=True,
+            action=("Force off", self.on_force_off))
+        return False
+
+    def finish_shutdown(self):
+        self.restarting = None
+        self.picker.set_sensitive(True)
+        if self.start_after:
+            self.start_vm()
+        else:
+            self.reload()
+            self.announce("Shut down " + self.vm.label)
+
+    def on_force_off(self, _button):
+        try:
+            self.manager.force_off(self.vm)
+        except RuntimeError as error:
+            self.announce("Did not power off", str(error), failed=True)
+            return
+        self.finish_shutdown()
+
+    def on_open(self, _button):
+        try:
+            if not self.vm.running:
+                self.manager.start(self.vm)
+            self.manager.open_screen(self.vm)
+        except RuntimeError as error:
+            self.announce("Cannot open the screen", str(error), failed=True)
+        self.reload()
+
+    def on_check(self, _button):
+        if self.vm is None:
+            return
+        try:
+            verdict, text = self.manager.check_3d(self.vm)
+        except RuntimeError as error:
+            verdict, text = "unknown", str(error)
+        dialog = Gtk.Dialog(title="3D check: %s" % self.vm.label,
+                            transient_for=self, modal=True)
+        dialog.add_button("Close", Gtk.ResponseType.CLOSE)
+        dialog.set_default_size(640, 360)
+        view = Gtk.TextView(editable=False, monospace=True)
+        view.set_left_margin(10)
+        view.set_top_margin(10)
+        view.get_buffer().set_text(
+            text + "\nSaved in " + self.manager.check_file(self.vm) + "\n")
+        scroller = Gtk.ScrolledWindow()
+        scroller.add(view)
+        dialog.get_content_area().pack_start(scroller, True, True, 0)
+        dialog.show_all()
+        dialog.run()
+        dialog.destroy()
 
     def on_restore(self, _button):
         slot = self.slot_picker.get_active_text()
@@ -490,8 +679,9 @@ def snapshot(window, path, change=None):
     GLib.timeout_add(1200, draw)
 
 
-def run(manager, snapshot_path=None, change=None):
-    window = Window(manager)
+def run(manager, snapshot_path=None, change=None, initial=None):
+    """initial is (name, uri or None): the VM to show first."""
+    window = Window(manager, initial)
     window.show_all()
     window.reload()
     if snapshot_path:

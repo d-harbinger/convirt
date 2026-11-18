@@ -5,7 +5,7 @@ A desktop tool that shows the microphone, sound output, 3D acceleration, display
 ## Project at a glance
 
 - **Stack**: Python 3.9+ standard library, plus GTK 3 through PyGObject for the window. There are no pip dependencies and no virtual environment.
-- **Modules**: `convirtlib/core.py` reads and edits a domain definition as an ElementTree and touches neither libvirt nor the screen. `convirtlib/manager.py` runs `virsh`, keeps the backups and applies changes. `convirtlib/ui.py` is the window. `convirtlib/cli.py` parses the command line. `convirt` is the launcher.
+- **Modules**: `convirtlib/core.py` reads and edits a domain definition as an ElementTree and touches neither libvirt nor the screen. `convirtlib/manager.py` runs `virsh`, keeps the backups, applies changes, and starts and shuts down VMs. `convirtlib/check.py` checks the 3D path on the host: render node, QEMU modules, the running QEMU's arguments and its log. `convirtlib/ui.py` is the window. `convirtlib/cli.py` parses the command line. `convirt` is the launcher.
 - **State**: previous definitions for undo and the save slots, under `~/.local/state/convirt/`, mode 0600. Nothing else is stored.
 
 ## Run, install, test
@@ -18,7 +18,7 @@ A desktop tool that shows the microphone, sound output, 3D acceleration, display
 
 ## Verification boundary
 
-The tests cover `core.py` and the change and undo flow on sample definitions through the `Files` backend, which treats a directory of XML files as the set of VMs. Keep `core.py` free of libvirt and GTK imports so it stays testable that way.
+The tests cover `core.py`, the change and undo flow, and the 3D check (with a fake `/proc`, log and module folder) on sample definitions through the `Files` backend, which treats a directory of XML files as the set of VMs and a `NAME.live.xml` beside one as running. Keep `core.py` free of libvirt and GTK imports so it stays testable that way.
 
 Four hidden options exist for checking the rest without a real VM: `--files DIR` swaps libvirt for that directory (its `networks/` folder holds libvirt networks), `--backups DIR` moves the undo store, `--snapshot FILE` draws the window to a PNG and exits, and `--change SWITCH=VALUE` makes one change in the window before the PNG is drawn. `docs/screenshot.png` is made with them, from a running VM after `--change network=network:lab`.
 

@@ -13,7 +13,18 @@ convirt shows the security- and display-relevant settings of a libvirt virtual m
 | Shared clipboard | on, off | Whether host and guest share the clipboard. Only the virt-manager display has one. |
 | Network | unplugged, or a connection | What the network card is plugged into: a libvirt network, a host bridge, macvtap on a wired host interface, or user-mode networking. The list holds what the host has. |
 
-Each row states what its current value means. A change is stored at once and takes effect at the next full shut off and start of the VM; while a VM runs, the window lists the switches that are waiting for that restart.
+Each row states what its current value means. A change is stored at once and takes effect at the next full shut off and start of the VM. While a VM runs, a changed row is marked "after restart" and says what runs now and what the next start brings, and a bar offers **Restart to apply**: convirt asks the guest to shut down, as its power button would, waits up to a minute (then offers Force off), and starts it again. **Start**, **Shut down** and **Open** (the VM's screen in virt-viewer or virt-manager) sit beside the VM's name, so the whole round trip happens in one window.
+
+## Does 3D work?
+
+The 3D row's **Details**, and `./convirt check VM` from a shell, check each step the 3D path needs and say which one fails:
+
+- a GPU render node on the host that QEMU can open, and its driver;
+- the QEMU modules for virgl and the chosen display (`hw-display-virtio-gpu-gl`, `ui-opengl`, `ui-sdl` and the like; Arch, Debian and Fedora ship them as separate packages);
+- for a running VM, what QEMU was actually started with (a `-gl` video device and an OpenGL display), read from its process;
+- what QEMU wrote to its log since the VM last started. A system VM's log is readable by root only, so the check prints the `sudo tail` line instead.
+
+The row itself reads "✓ working in QEMU" or "✗ not working" with the first failing step. Each check is saved to `~/.local/state/convirt/3d-<session|system>-<vm>.txt`. Inside a Linux guest, `journalctl -k | grep virgl` showing `+virgl` is the final word.
 
 ## Requirements
 
@@ -27,7 +38,7 @@ Each row states what its current value means. A change is stored at once and tak
 | Debian, Ubuntu, Mint | `python3-gi gir1.2-gtk-3.0 libvirt-clients` |
 | Fedora | `python3-gobject gtk3 libvirt-client` |
 
-The tool installs nothing, needs no root, and runs on the machine that hosts the VMs.
+The tool installs nothing, needs no root, and runs on the machine that hosts the VMs. For **Open**, virt-viewer or virt-manager.
 
 ## Run
 
@@ -53,6 +64,10 @@ The same switches work from a shell:
 ./convirt show workstation
 ./convirt set workstation mic off
 ./convirt undo workstation
+./convirt stop workstation        # as the power button; `off` powers off at once
+./convirt start workstation
+./convirt check workstation       # exits 1 when 3D is set and not working
+./convirt open workstation        # the window, on that VM
 ```
 
 `mic`, `sound`, `accel3d` and `clipboard` take `on` or `off`. `display` takes `sdl`, `gtk` or `spice`. `network` takes `off`, `on` (plug the cable back in), `network:NAME`, `bridge:NAME`, `direct:DEVICE` (macvtap) or `user`; the card keeps its model and MAC address.
