@@ -470,6 +470,105 @@ def value_label(switch, value):
     return label or value
 
 
+# How strongly a row's current value opens the host: a caution where a
+# channel opens or the guest drives a large body of host code, a note where
+# the exposure is small or bounded by the host's own firewall.
+CAUTION, NOTE = "caution", "note"
+LEGACY_SOUND = ("sb16", "es1370", "ac97")
+
+
+def cautions(root, host=None):
+    """{row: (level, text)} for each row whose current value opens
+    something to the host. Besides the switches, "vm" speaks for the VM
+    as a whole and "attached" for the devices that have no switch.
+
+    host is read_state's, plus "wayland": whether the desktop the window
+    would open on is Wayland. The texts describe the setting, never the
+    machine, so they hold on any host.
+    """
+    host = host or {}
+    state = read_state(root, host)
+    value = {name: entry["value"] for name, entry in state.items()}
+    found = {}
+
+    if host.get("system") is False:
+        found["vm"] = (CAUTION, "Session VM: QEMU runs as your user. A guest "
+                       "escape reaches what your account can reach.")
+
+    if value["accel3d"] == "on":
+        found["accel3d"] = (CAUTION, "Guest GL commands are parsed by host "
+                            "code (virglrenderer) and passed to the host "
+                            "GPU driver: the most host code the guest "
+                            "drives here.")
+
+    if value["display"] in OWN_WINDOW:
+        if host.get("wayland") is False:
+            found["display"] = (CAUTION, "On X11 any client, QEMU's window "
+                                "too, can read input to other windows and "
+                                "capture them.")
+        else:
+            found["display"] = (NOTE, "QEMU joins your desktop session as a "
+                                "client; this needs a session VM.")
+
+    if value["sound"] != "off":
+        effective = value["audio"]
+        if effective == "default":
+            effective = _default_audio(root)
+        if value["mic"] != "off":
+            if effective in NAMED_AUDIO:
+                found["mic"] = (CAUTION, "The guest can record from the "
+                                "host input.")
+            elif effective == "spice":
+                found["mic"] = (NOTE, "The guest records from the viewer's "
+                                "microphone when the viewer sends it.")
+        if effective == "pipewire" and host.get("system"):
+            found["audio"] = (CAUTION, "The system's QEMU user is let into "
+                              "your session's PipeWire, which gives native "
+                              "clients every node: microphones, cameras, "
+                              "screen-share streams.")
+        elif effective in NAMED_AUDIO:
+            found["audio"] = (NOTE, "QEMU is a client of your sound server, "
+                              "with the same access as your own apps.")
+        if value["sound"] in LEGACY_SOUND:
+            found["sound"] = (NOTE, "Older emulated hardware: more legacy "
+                              "device code than Intel HDA or virtio.")
+
+    if value["clipboard"] == "on":
+        found["clipboard"] = (CAUTION, "Synced both ways while a viewer is "
+                              "open: the guest can read what you copy. The "
+                              "same agent channel carries drag-and-drop "
+                              "file transfer.")
+
+    network = value["network"]
+    kind, _, name = network.partition(":")
+    mode = host.get("networks", {}).get(name) if kind == "network" else None
+    if kind in ("bridge", "direct") or mode == "bridge":
+        found["network"] = (CAUTION, "The guest is a full peer on the LAN.")
+    elif kind == "user":
+        found["network"] = (CAUTION, "Services the host binds only to "
+                            "localhost are reachable from the guest at its "
+                            "gateway address.")
+    elif mode == "isolated":
+        found["network"] = (NOTE, "Nothing leaves the host, but the guest "
+                            "still reaches the host itself; the host "
+                            "firewall decides which services answer.")
+    elif kind == "network":
+        found["network"] = (NOTE, "The guest reaches the LAN through the "
+                            "host and the host on the bridge address; the "
+                            "host firewall decides which host services "
+                            "answer.")
+
+    devices = _devices(root)
+    parts = []
+    if devices.findall("filesystem"):
+        parts.append("Host folders the guest can read and write.")
+    if devices.findall("hostdev") or devices.findall("redirdev"):
+        parts.append("Host hardware handed to the guest.")
+    if parts:
+        found["attached"] = (CAUTION, " ".join(parts))
+    return found
+
+
 def read_state(root, host=None):
     """Return {switch: {value, enabled, meaning}} for one definition.
 

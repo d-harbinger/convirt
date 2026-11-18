@@ -637,5 +637,68 @@ class ManagerTest(unittest.TestCase):
         self.assertIsNone(audio_devices(missing))
 
 
+class CautionTest(unittest.TestCase):
+    """Each row whose value opens the host says so; closed rows say
+    nothing."""
+
+    def levels(self, root, **host):
+        return {k: level for k, (level, _text)
+                in core.cautions(root, host).items()}
+
+    def test_starting_vm_cautions(self):
+        root = core.parse(SPICE_VM)
+        self.assertEqual(self.levels(root, system=False), {
+            "vm": "caution", "mic": "note", "clipboard": "caution",
+            "network": "caution", "attached": "caution"})
+        self.assertNotIn("vm", self.levels(root, system=True))
+
+    def test_closed_settings_say_nothing(self):
+        root = core.parse(SPICE_VM)
+        for switch, value in (("sound", "off"), ("clipboard", "off"),
+                              ("network", "off")):
+            core.apply(root, switch, value)
+        for tag in ("redirdev",):
+            for element in root.findall("devices/" + tag):
+                root.find("devices").remove(element)
+        self.assertEqual(self.levels(root, system=True), {})
+
+    def test_3d_own_window_and_x11(self):
+        root = core.parse(SPICE_VM)
+        core.apply(root, "accel3d", "on")
+        core.apply(root, "display", "sdl", WAYLAND)
+        found = self.levels(root, wayland=True)
+        self.assertEqual(found["accel3d"], "caution")
+        self.assertEqual(found["display"], "note")
+        self.assertEqual(self.levels(root, wayland=False)["display"],
+                         "caution")
+
+    def test_sound_cautions_follow_the_sound_system(self):
+        root = core.parse(SPICE_VM)
+        core.apply(root, "audio", "pipewire", WAYLAND)
+        found = core.cautions(root, {"system": True})
+        self.assertEqual(found["mic"][0], "caution")
+        self.assertIn("every node", found["audio"][1])
+        self.assertEqual(core.cautions(root, {"system": False})["audio"][0],
+                         "note")
+        core.apply(root, "mic", "off")
+        self.assertNotIn("mic", core.cautions(root))
+        core.apply(root, "sound", "sb16")
+        self.assertEqual(core.cautions(root)["sound"][0], "note")
+
+    def test_network_cautions_by_kind(self):
+        root = core.parse(SPICE_VM)
+        cases = (("network:lab", {"lab": "isolated"}, "note", "host itself"),
+                 ("network:default", {"default": "nat"}, "note", "LAN"),
+                 ("network:br", {"br": "bridge"}, "caution", "full peer"),
+                 ("bridge:br0", {}, "caution", "full peer"),
+                 ("direct:eth0", {}, "caution", "full peer"),
+                 ("user", {}, "caution", "localhost"))
+        for key, modes, level, words in cases:
+            core.apply(root, "network", key)
+            found = core.cautions(root, {"networks": modes})["network"]
+            self.assertEqual(found[0], level, key)
+            self.assertIn(words, found[1], key)
+
+
 if __name__ == "__main__":
     unittest.main()

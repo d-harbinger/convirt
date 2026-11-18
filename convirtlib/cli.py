@@ -85,14 +85,28 @@ def main(argv=None):
                                     "running" if vm.running else "shut off"))
         elif len(args) == 2 and args[0] == "show":
             vm = manager.find(args[1])
-            state = manager.state(vm)
+            host = manager.host_facts(vm, manager.stored(vm))
+            state = manager.state(vm, host)
+            cautions = manager.cautions(vm, host)
+            marks = {core.CAUTION: "!", core.NOTE: "i"}
+
+            def caution(key):
+                if key in cautions:
+                    level, text = cautions[key]
+                    print("  %s %s" % (marks[level], text))
+
+            print("%s, %s VM" % (vm.label,
+                                 "session" if vm.session else "system"))
+            caution("vm")
             for name in core.SWITCHES:
                 print("%-16s %-16s %s" % (core.TITLES[name],
                                          state[name]["value"],
                                          state[name]["meaning"]))
+                caution(name)
             attached = core.exposures(manager.stored(vm))
             if attached:
                 print("also attached: " + ", ".join(attached))
+                caution("attached")
             pending = manager.pending(vm)
             if pending:
                 print("waiting for next full start: " + ", ".join(pending))

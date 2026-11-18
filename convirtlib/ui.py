@@ -39,7 +39,39 @@ CSS = b"""
                           box-shadow: inset 3px 0 0 #e5a50a; }
 .convirt-dim { opacity: 0.7; }
 .convirt-more { padding: 4px 12px 8px 12px; }
+.convirt-caution { color: #e5a50a;
+                   -gtk-icon-palette: warning #e5a50a, error #e5a50a; }
+.convirt-note { opacity: 0.6; }
 """
+
+# The icon for each level of what a setting opens to the host.
+CAUTION_ICONS = {"caution": "dialog-warning-symbolic",
+                 "note": "dialog-information-symbolic"}
+
+
+def caution_icon():
+    """A small icon whose hover says what a setting opens; hidden until a
+    row's value opens something."""
+    icon = Gtk.Image()
+    icon.set_no_show_all(True)
+    icon.set_valign(Gtk.Align.CENTER)
+    return icon
+
+
+def show_caution(icon, found):
+    """found is (level, text) or None."""
+    style = icon.get_style_context()
+    for level in CAUTION_ICONS:
+        style.remove_class("convirt-" + level)
+    if not found:
+        icon.hide()
+        return
+    level, text = found
+    icon.set_from_icon_name(CAUTION_ICONS[level], Gtk.IconSize.MENU)
+    style.add_class("convirt-" + level)
+    icon.set_tooltip_text(("Use with caution: " if level == "caution"
+                           else "") + text)
+    icon.show()
 
 # Each section: its heading, the rows always shown, and the rows under a
 # "More" expander at its foot.
@@ -96,6 +128,7 @@ class Window(Gtk.Window):
         self.controls = {}
         self.meanings = {}
         self.badges = {}
+        self.cautions = {}
         self.lines = {}
         self.banner_timer = None
         # While a restart runs: the seconds left before Force off is offered.
@@ -118,6 +151,12 @@ class Window(Gtk.Window):
         self.picker = Gtk.ComboBoxText()
         self.picker.connect("changed", self.on_pick)
         header.pack_start(self.picker, False, False, 0)
+        # Which connection the VM is on says who QEMU runs as.
+        self.vm_kind = Gtk.Label()
+        self.vm_kind.get_style_context().add_class("convirt-meaning")
+        header.pack_start(self.vm_kind, False, False, 0)
+        self.vm_caution = caution_icon()
+        header.pack_start(self.vm_caution, False, False, 0)
         self.open_button = Gtk.Button(label="Open")
         self.open_button.connect("clicked", self.on_open)
         header.pack_end(self.open_button, False, False, 0)
@@ -159,10 +198,14 @@ class Window(Gtk.Window):
                 row.set_activatable(False)
                 row.add(expander)
                 rows.add(row)
+        attached_line = Gtk.Box(spacing=6)
+        self.attached_caution = caution_icon()
+        attached_line.pack_start(self.attached_caution, False, False, 0)
         self.attached = Gtk.Label(xalign=0)
         self.attached.set_line_wrap(True)
         self.attached.get_style_context().add_class("convirt-dim")
-        sections.pack_start(self.attached, False, False, 0)
+        attached_line.pack_start(self.attached, True, True, 0)
+        sections.pack_start(attached_line, False, False, 0)
         scroller = Gtk.ScrolledWindow()
         scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         scroller.set_propagate_natural_height(True)
@@ -255,6 +298,9 @@ class Window(Gtk.Window):
         badge.get_style_context().add_class("convirt-badge")
         badge.set_no_show_all(True)
         titles.pack_start(badge, False, False, 0)
+        caution = caution_icon()
+        titles.pack_start(caution, False, False, 0)
+        self.cautions[name] = caution
         meaning = Gtk.Label(xalign=0)
         meaning.set_ellipsize(Pango.EllipsizeMode.END)
         meaning.get_style_context().add_class("convirt-meaning")
@@ -393,12 +439,15 @@ class Window(Gtk.Window):
             return
         try:
             self.manager.refresh_running(self.vm)
-            state = self.manager.state(self.vm)
+            host = self.manager.host_facts(
+                self.vm, self.manager.stored(self.vm))
+            state = self.manager.state(self.vm, host)
             pending = self.manager.pending(self.vm)
             live = self.manager.live_values(self.vm)
             attached = core.exposures(self.manager.stored(self.vm))
             slots = self.manager.slots(self.vm)
-            choices = self.manager.choices(self.vm)
+            choices = self.manager.choices(self.vm, host)
+            cautions = self.manager.cautions(self.vm, host)
         except RuntimeError as error:
             self.set_sensitive_rows(False)
             self.announce("Cannot read this VM", str(error), failed=True)
@@ -408,6 +457,10 @@ class Window(Gtk.Window):
         self.attached.set_text(
             "Also attached: " + ", ".join(attached) if attached
             else "Nothing else links this VM to the host")
+        show_caution(self.attached_caution, cautions.get("attached"))
+        self.vm_kind.set_text("session VM" if self.vm.session
+                              else "system VM")
+        show_caution(self.vm_caution, cautions.get("vm"))
         chosen = self.slot_picker.get_active_text()
         self.slot_picker.remove_all()
         for slot in slots:
@@ -443,6 +496,7 @@ class Window(Gtk.Window):
             self.meanings[name].set_text(meaning)
             self.meanings[name].set_tooltip_text(meaning)
             self.badges[name].set_visible(waiting)
+            show_caution(self.cautions[name], cautions.get(name))
             style = self.lines[name].get_style_context()
             (style.add_class if waiting else style.remove_class)("pending")
         self.loading = False

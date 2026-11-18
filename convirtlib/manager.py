@@ -331,7 +331,9 @@ class Manager:
             mode = forward_mode(self.backend.network_xml(vm, name))
             if mode:
                 networks[name] = mode
-        facts = {"networks": networks, "system": not vm.session}
+        # The desktop this tool runs in is the one an own window opens on.
+        facts = {"networks": networks, "system": not vm.session,
+                 "wayland": bool(os.environ.get("WAYLAND_DISPLAY"))}
         render = self.backend.render_nodes(vm)
         if render is not None:
             facts["render"] = render
@@ -344,10 +346,15 @@ class Manager:
             facts["audio_types"] = types
         return facts
 
-    def choices(self, vm):
+    def cautions(self, vm, host=None):
+        """{row: (level, text)} for what the VM's settings open."""
+        root = self.stored(vm)
+        return core.cautions(root, host or self.host_facts(vm, root))
+
+    def choices(self, vm, host=None):
         """{switch: [(value, label)]} for every switch that is a list."""
         root = self.stored(vm)
-        choices = core.sound_choices(root, self.host_facts(vm, root))
+        choices = core.sound_choices(root, host or self.host_facts(vm, root))
         choices["display"] = list(core.DISPLAY_LABELS.items())
         choices["network"] = self.network_choices(vm)
         return choices
@@ -424,9 +431,11 @@ class Manager:
             return None
         return core.values(core.parse(self.backend.xml(vm, live=True)))
 
-    def state(self, vm):
+    def state(self, vm, host=None):
+        """host is host_facts, passed in when a caller already has them,
+        so one redraw asks the host once."""
         root = self.stored(vm)
-        state = core.read_state(root, self.host_facts(vm, root))
+        state = core.read_state(root, host or self.host_facts(vm, root))
         if not vm.session \
                 and state["display"]["value"] not in core.OWN_WINDOW:
             # A system VM runs as another user and cannot open a window

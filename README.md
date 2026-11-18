@@ -1,6 +1,6 @@
 # convirt
 
-![The convirt window: rows grouped under Sound (card, microphone, host sound system, output, input, and latency and sample rate under an expander), Picture and Links to the host; a green line confirms a change of host sound to PipeWire, the changed row is marked as waiting for a full shut down and start, and an amber line offers Shut down and start](docs/screenshot.png)
+![The convirt window: rows grouped under Sound (card, microphone, host sound system, output, input, and latency and sample rate under an expander), Picture and Links to the host; amber caution icons beside the session VM, the microphone and the shared clipboard, grey notes beside host sound and the network; a green line confirms a change of host sound to PipeWire, the changed row is marked to apply at the next start, and an amber line offers Shut down and start](docs/screenshot.png)
 
 convirt shows the sound, display and host-link settings of a libvirt virtual machine as a short list of rows, and changes them without hand-editing XML. Save slots keep exact copies of a configuration.
 
@@ -109,9 +109,26 @@ Every change reads the stored definition of the VM, edits it, saves the previous
 - **Host sound.** A chosen sound system stays when the display changes, with its output, input and latency, except SPICE sound, which only exists with the SPICE display: switching to an own window replaces it with the desktop session's PipeWire or PulseAudio. PipeWire gets the session's runtime folder (`runtimeDir`). A system VM's QEMU runs as another user and reaches the desktop's PipeWire only if it is allowed to open its socket, which the row says. Changing the sound system drops the options that belong to the old one (device names, latency) and keeps the sample rate.
 - **Plays to and Records from.** The lists come from `pactl` on the host, which answers for PipeWire (through pipewire-pulse) and PulseAudio; an output's monitor is not offered as an input.
 
-## Risk to know about
+## What each setting opens to the host
 
-3D acceleration lets the guest's graphics commands run through host code, which widens what a hostile guest could attack. Leave it off for a VM that exists to contain untrusted software.
+A row whose current value opens something to the host carries an icon; hovering it says what. ⚠ marks a channel that crosses by design or a large body of host code the guest drives; ⓘ marks a smaller exposure, or one the host's own firewall bounds. A closed value (card off, no microphone, 3D off, clipboard off, network isolated or unplugged) carries none. `convirt show VM` prints the same notes, marked `!` and `i`.
+
+| Where | When | What it opens |
+|---|---|---|
+| Beside the VM | Session VM | ⚠ QEMU runs as the desktop user, so a guest escape reaches what that account can reach. A system VM's QEMU runs as a separate account. |
+| 3D acceleration | On | ⚠ The guest's GL command streams are parsed by host code (virglrenderer) and passed to the host GPU driver. |
+| Display | Own window | ⓘ QEMU joins the desktop session as a client; ⚠ on X11, where any client can read input to other windows and capture them. |
+| Microphone | Input on, with PipeWire or PulseAudio | ⚠ The guest can record from the host input. With SPICE it records only what the viewer sends (ⓘ). |
+| Host sound | PipeWire on a system VM | ⚠ The system's QEMU user is let into the session's PipeWire, whose session manager (WirePlumber) gives native clients every node, cameras and screen-share streams included. On a session VM, QEMU has the same access as the user's own apps (ⓘ). |
+| Sound card | SB16, ES1370, AC97 | ⓘ Older emulated hardware: more legacy device code than Intel HDA or virtio. |
+| Shared clipboard | On | ⚠ Synced both ways while a viewer is open; the same agent channel carries drag-and-drop file transfer. |
+| Network | NAT or routed network | ⓘ The guest reaches the LAN through the host, and the host itself on the bridge address; the host firewall decides which host services answer. |
+| Network | Isolated network | ⓘ Nothing leaves the host, but the guest still reaches the host itself. |
+| Network | Host bridge, macvtap, or a bridged libvirt network | ⚠ The guest is a full peer on the LAN. |
+| Network | User-mode | ⚠ Services the host binds only to localhost are reachable from the guest at its gateway address, which SLIRP maps to the host's loopback. |
+| Also attached | Shared folders, host devices, USB redirection | ⚠ Host folders the guest can read and write; host hardware handed to the guest. |
+
+What the notes cannot show is the host's own confinement of QEMU: SELinux or AppArmor labels and seccomp, applied by libvirt where the distribution enables them. For a VM that exists to contain untrusted software, the closed values throughout, on a system VM, keep the most between the guest and the host.
 
 ## Tests
 
