@@ -1,0 +1,39 @@
+# .privacy-allow — declare intentionally-synthetic data so the guard stops
+# flagging it. COMMIT this file (unlike .privacy-patterns, which is per-clone
+# and gitignored). What's synthetic is a property of the repo, the same for
+# every clone, so it's versioned with the repo and reviewable in a diff.
+#
+# Declare VALUES, never paths. Realistic demo data is realistic ON PURPOSE — a
+# sample LAN IP, a fake MAC, a canonical example key. A regex can't tell those
+# from a real leak, so the repo declares them. Crucially we declare the exact
+# VALUE, not the file or directory it lives in: excluding a whole `tests/**`
+# path would also blind the guard to a real secret pasted into a test — which
+# is exactly how a real device serial once slipped through. So the guard scans
+# everything and suppresses a finding only when the matched text EXACTLY equals
+# a value listed here. An unknown identifier in any path still fires.
+#
+# Format: one literal value per line. `#` comments and blank lines ignored.
+# The value must equal exactly what a pattern matches:
+#
+#   192.168.1.50                # a sample LAN IP
+#   00:1A:2B:3C:4D:5E           # a demo MAC
+#   AKIAIOSFODNN7EXAMPLE        # the canonical AWS example key
+#   Samsung FAKESERIAL00        # vendor-serial rule matches brand + serial...
+#   FAKESERIAL00                # ...and the bare-serial check matches just the serial
+#   noreply@example.com         # a known-safe address
+#
+# Read by BOTH scripts/hooks/pre-commit and scripts/audit-privacy.sh, so the
+# commit gate and the history audit agree. For a match found by GITLEAKS inside
+# demo data instead, add it to [allowlist] in .gitleaks.toml.
+
+# Every line below is commented out, so copying this file to `.privacy-allow`
+# changes nothing until a line is uncommented. An uncommented line is an
+# allowlist entry: the guard stops flagging that exact value everywhere.
+#
+# Example: the bundled ws_mount pattern (lib/patterns.sh) flags workspace mount
+# paths. If a repo's docs quote these two literals as teaching examples,
+# uncommenting them stops the guard flagging its own explanation. Left commented, a staged
+# /mnt/Projects or /mnt/shared is still blocked. Exact literals only: a real
+# sensitive mount (e.g. /media/sf_*, /mnt/secrets) fires either way.
+# /mnt/Projects               # deprecated workspace mount, quoted as a doc example
+# /mnt/shared                 # deprecated shared-folder mount, quoted as a doc example

@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+# privacy-guard: per-clone patterns file (gitignored; see .privacy-patterns.example)
+.privacy-patterns
+# privacy-guard: per-clone trusted-SSID allowlist for lan-guard (gitignored — SSIDs are network identifiers)
+.lan-allow
+# privacy-guard: local script log output (audit, host gates, build/test logs)
+.dev-logs/
+# privacy-guard: legacy log dir name — kept ignored during the .dev-logs rename migration
+.gsd-logs/
+# privacy-guard: wireless capture log — holds live-air network identifiers
+*.kismet
+# privacy-guard: wireless capture journal — same content, same rule
+*.kismet-journal
+# privacy-guard: track .claude/settings.json (project hook config), ignore the rest
+.claude/*
+!.claude/settings.json

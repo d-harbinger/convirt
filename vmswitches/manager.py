@@ -1,0 +1,208 @@
+"""Talk to libvirt, keep backups, and apply switch changes.
+
+Two backends share one interface: Libvirt runs virsh, and Files treats a
+directory of XML files as the set of VMs so the rest of the program can
+be tested and drawn without libvirt.
+"""
+import os
+import subprocess
+import time
+
+from . import core
+
+URIS = ("qemu:///session", "qemu:///system")
+KEEP_BACKUPS = 20
+
+
+class Vm:
+    def __init__(self, uri, name, running):
+        self.uri = uri
+        self.name = name
+        self.running = running
+
+    @property
+    def session(self):
+        return self.uri.endswith("session")
+
+    @property
+    def label(self):
+        if self.session:
+            return self.name
+        return "%s (system)" % self.name
+
+
+class Libvirt:
+    def _virsh(self, uri, *args, readonly=False, stdin=None):
+        command = ["virsh", "-c", uri]
+        if readonly:
+            command.insert(1, "-r")
+        try:
+            return subprocess.run(command + list(args), input=stdin,
+                                  capture_output=True, text=True, timeout=30)
+        except FileNotFoundError:
+            raise RuntimeError("virsh is not installed")
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("libvirt did not answer")
+
+    def list(self):
+        vms = []
+        for uri in URIS:
+            everything = self._virsh(uri, "list", "--all", "--name",
+                                     readonly=True)
+            if everything.returncode != 0:
+                continue
+            running = self._virsh(uri, "list", "--name", readonly=True)
+            up = set(running.stdout.split("\n"))
+            for name in everything.stdout.split("\n"):
+                if name.strip():
+                    vms.append(Vm(uri, name.strip(), name in up))
+        return vms
+
+    def xml(self, vm, live=False):
+        args = ["dumpxml", vm.name] if live \
+            else ["dumpxml", "--inactive", vm.name]
+        result = self._virsh(vm.uri, *args, readonly=True)
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip())
+        return result.stdout
+
+    def define(self, vm, text):
+        result = self._virsh(vm.uri, "define", "/dev/stdin", stdin=text)
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip())
+
+
+class Files:
+    """Each NAME.xml in a directory is a VM; NAME.live.xml means running."""
+
+    def __init__(self, directory):
+        self.directory = directory
+
+    def _path(self, vm, live=False):
+        suffix = ".live.xml" if live else ".xml"
+        return os.path.join(self.directory, vm.name + suffix)
+
+    def list(self):
+        vms = []
+        for entry in sorted(os.listdir(self.directory)):
+            if entry.endswith(".xml") and not entry.endswith(".live.xml"):
+                name = entry[:-4]
+                live = os.path.join(self.directory, name + ".live.xml")
+                vms.append(Vm("qemu:///session", name, os.path.exists(live)))
+        return vms
+
+    def xml(self, vm, live=False):
+        with open(self._path(vm, live)) as handle:
+            return handle.read()
+
+    def define(self, vm, text):
+        core.parse(text)
+        with open(self._path(vm), "w") as handle:
+            handle.write(text)
+
+
+def state_dir():
+    base = os.environ.get("XDG_STATE_HOME") \
+        or os.path.expanduser("~/.local/state")
+    return os.path.join(base, "vm-switches")
+
+
+class Manager:
+    def __init__(self, backend, backups=None):
+        self.backend = backend
+        self.backups = backups or state_dir()
+
+    def list(self):
+        """Running VMs first, then by name."""
+        return sorted(self.backend.list(),
+                      key=lambda vm: (not vm.running, vm.name))
+
+    def find(self, name):
+        matches = [vm for vm in self.list() if vm.name == name]
+        if not matches:
+            raise RuntimeError("no VM named %s" % name)
+        return matches[0]
+
+    def stored(self, vm):
+        return core.parse(self.backend.xml(vm))
+
+    def state(self, vm):
+        state = core.read_state(self.stored(vm))
+        if not vm.session \
+                and state["display"]["value"] not in core.OWN_WINDOW:
+            # A system VM runs as another user and cannot open a window
+            # in this desktop session.
+            state["display"]["enabled"] = False
+            state["display"]["meaning"] += "; system VM, fixed"
+        return state
+
+    def pending(self, vm):
+        """Switches whose stored value differs from the running VM."""
+        if not vm.running:
+            return []
+        live = core.values(core.parse(self.backend.xml(vm, live=True)))
+        stored = core.values(self.stored(vm))
+        return [name for name in core.SWITCHES if live[name] != stored[name]]
+
+    def change(self, vm, switch, value, facts=None):
+        """Apply one switch. Return True if the definition changed."""
+        if switch == "display" and value in core.OWN_WINDOW \
+                and not vm.session:
+            raise RuntimeError("a system VM cannot use its own window")
+        original = self.backend.xml(vm)
+        root = core.parse(original)
+        if core.values(root)[switch] == value:
+            return False
+        try:
+            core.apply(root, switch, value, facts)
+        except ValueError as error:
+            raise RuntimeError(str(error))
+        backup = self._save_backup(vm, original)
+        try:
+            self.backend.define(vm, core.serialize(root))
+        except RuntimeError:
+            os.remove(backup)
+            raise
+        # libvirt fills in defaults when it stores a definition; if one of
+        # them undid the change, apply once more on what it stored.
+        root = self.stored(vm)
+        if core.values(root)[switch] != value:
+            core.apply(root, switch, value, facts)
+            self.backend.define(vm, core.serialize(root))
+        return True
+
+    def can_undo(self, vm):
+        return bool(self._backups(vm))
+
+    def undo(self, vm):
+        backups = self._backups(vm)
+        if not backups:
+            raise RuntimeError("nothing to undo")
+        with open(backups[-1]) as handle:
+            self.backend.define(vm, handle.read())
+        os.remove(backups[-1])
+
+    def _vm_dir(self, vm):
+        kind = "session" if vm.session else "system"
+        safe = "".join(c if c.isalnum() or c in "-_." else "_"
+                       for c in vm.name)
+        return os.path.join(self.backups, "%s-%s" % (kind, safe))
+
+    def _backups(self, vm):
+        directory = self._vm_dir(vm)
+        if not os.path.isdir(directory):
+            return []
+        return sorted(os.path.join(directory, f)
+                      for f in os.listdir(directory) if f.endswith(".xml"))
+
+    def _save_backup(self, vm, text):
+        directory = self._vm_dir(vm)
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        path = os.path.join(directory, "%d.xml" % time.time_ns())
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                             0o600)
+        with os.fdopen(descriptor, "w") as handle:
+            handle.write(text)
+        for old in self._backups(vm)[:-KEEP_BACKUPS]:
+            os.remove(old)
+        return path

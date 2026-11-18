@@ -1,0 +1,72 @@
+"""Command line: open the window, or read and flip switches from a shell.
+
+    vm-switches                       open the window
+    vm-switches list                  list the VMs
+    vm-switches show VM               show every switch of one VM
+    vm-switches set VM SWITCH VALUE   change one switch
+    vm-switches undo VM               restore the config before the last change
+
+Switches: mic, sound, accel3d, network take on or off; display takes
+sdl, gtk or spice. A change is stored at once and takes effect at the next
+full shut off and start of the VM.
+"""
+import sys
+
+from . import core
+from .manager import Files, Libvirt, Manager
+
+
+def main(argv=None):
+    args = list(sys.argv[1:] if argv is None else argv)
+
+    # Test options: a directory of XML files instead of libvirt, a
+    # separate backup directory, and a PNG of the window.
+    backend, backups, snapshot = Libvirt(), None, None
+    while args and args[0] in ("--files", "--backups", "--snapshot"):
+        option, value = args[0], args[1]
+        del args[:2]
+        if option == "--files":
+            backend = Files(value)
+        elif option == "--backups":
+            backups = value
+        else:
+            snapshot = value
+    manager = Manager(backend, backups)
+
+    try:
+        if not args:
+            try:
+                from . import ui
+            except (ImportError, ValueError):
+                print("The window needs GTK 3 for Python (PyGObject).")
+                print("The commands still work: vm-switches list")
+                return 1
+            ui.run(manager, snapshot)
+        elif args == ["list"]:
+            for vm in manager.list():
+                print("%-24s %s" % (vm.label,
+                                    "running" if vm.running else "shut off"))
+        elif len(args) == 2 and args[0] == "show":
+            vm = manager.find(args[1])
+            state = manager.state(vm)
+            for name in core.SWITCHES:
+                print("%-16s %-6s %s" % (core.TITLES[name],
+                                         state[name]["value"],
+                                         state[name]["meaning"]))
+            pending = manager.pending(vm)
+            if pending:
+                print("waiting for next full start: " + ", ".join(pending))
+        elif len(args) == 4 and args[0] == "set":
+            vm = manager.find(args[1])
+            changed = manager.change(vm, args[2], args[3])
+            print("changed" if changed else "already set")
+        elif len(args) == 2 and args[0] == "undo":
+            manager.undo(manager.find(args[1]))
+            print("restored")
+        else:
+            print(__doc__.strip())
+            return 2
+    except RuntimeError as error:
+        print("error: %s" % error)
+        return 1
+    return 0

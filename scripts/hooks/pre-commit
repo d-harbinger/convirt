@@ -1,0 +1,421 @@
+#!/usr/bin/env bash
+# Pre-commit privacy guard. Blocks the commit if staged changes contain
+# patterns that look like device or host identifiers leaking into the repo.
+#
+# Setup (one-time per machine, per clone):
+#   git config core.hooksPath scripts/hooks
+#
+# Bypass for an individual commit (use sparingly, and only if you've
+# manually confirmed the match is a false positive):
+#   git commit --no-verify
+#
+# Extending the patterns:
+#   • Project-wide patterns lived here, in the BUILTIN_PATTERNS array
+#     below. Add entries that make sense for every developer.
+#   • Per-developer / per-machine patterns go in a gitignored
+#     `.privacy-patterns` file at the repo root, one regex per line
+#     (lines starting with `#` are comments, blank lines ignored).
+#     Use this for your own home-dir path, internal hostnames, device
+#     serials specific to your hardware, etc.
+#
+# Why this exists: a Samsung Galaxy serial got committed into planning
+# docs + commit messages across ~150 commits on 2026-05-14 because no
+# automatic check existed. A git-filter-repo + force-push rewrote the
+# public history, but the lesson is that we shouldn't rely on humans
+# remembering. The hook makes the rule mechanical.
+
+set -e
+
+RED=$'\e[31m'
+YELLOW=$'\e[33m'
+RESET=$'\e[0m'
+
+PG_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/patterns.sh"
+if [ ! -f "$PG_LIB" ]; then
+  printf '%s\n' "${RED}privacy-guard: pattern library missing at $PG_LIB${RESET}" >&2
+  printf '%s\n' "${YELLOW}install incomplete — re-run install.sh --force${RESET}" >&2
+  exit 1
+fi
+# shellcheck source=../lib/patterns.sh
+. "$PG_LIB"
+
+# Detection patterns: single-sourced from lib/patterns.sh (scope commit|both).
+mapfile -t BUILTIN_PATTERNS < <(pg_grep_patterns)
+
+repo_root="$(git rev-parse --show-toplevel)"
+
+# ----------------------------------------------------------------------------
+# Layer 0: commit identity.
+#
+# Author and committer metadata publish with every commit and cannot be
+# corrected afterwards without rewriting history. That makes a wrong identity
+# the one class of leak the content scan below can never catch: it is never
+# present in a staged file, so grepping the diff misses it entirely.
+#
+# The rule: the address must be a GitHub no-reply address, which attributes the
+# commit to the account without publishing a mailbox. A repo that deliberately
+# commits under some other identity declares it in a committed
+# `.identity-allow` — one address or `*@domain` glob per line.
+#
+# Resolved with `git var`, not `git config`, so a per-invocation override
+# (`git -c user.email=… commit`) is checked too. That is not hypothetical: a
+# fleet-wide automation command pinned an address this way and wrote it into
+# the author metadata of every repository it touched, public ones included.
+#
+# Unlike the egress layer below, this one BLOCKS by default. The match is an
+# exact glob against a single field, so it has no false-positive noise to
+# curate, and the damage it prevents is the only kind that cannot be undone by
+# editing a file and committing again.
+# ----------------------------------------------------------------------------
+#
+# Repo-wide declarations (.identity-allow, .privacy-allow, .egress-allow) are
+# read from the INDEX (`git show :<file>`), never the working tree. A declaration
+# that exists only in one clone's working tree is not a declaration the other
+# clones receive; reading it would let a commit through on an entry nobody else
+# has. A file absent from the index means no declarations (fail closed).
+_staged_decl() { git show ":$1" 2>/dev/null || true; }
+
+IDENTITY_ALLOW=('*@users.noreply.github.com')
+while IFS= read -r raw; do
+  line="${raw%%#*}"                          # strip inline comment
+  line="${line#"${line%%[![:space:]]*}"}"    # ltrim
+  line="${line%"${line##*[![:space:]]}"}"    # rtrim
+  [ -z "$line" ] && continue
+  IDENTITY_ALLOW+=("$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')")
+done < <(_staged_decl .identity-allow)
+
+_identity_allowed() {
+  local addr pat
+  addr="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  for pat in "${IDENTITY_ALLOW[@]}"; do
+    # shellcheck disable=SC2053  # glob match is intended; do not quote $pat
+    [[ "$addr" == $pat ]] && return 0
+  done
+  return 1
+}
+
+identity_violations=""
+for _role in AUTHOR COMMITTER; do
+  # Format: "Name <addr> 1720000000 -0700" — take the angle-bracketed address.
+  _ident="$(git var "GIT_${_role}_IDENT" 2>/dev/null || true)"
+  _addr="${_ident##*<}"; _addr="${_addr%%>*}"
+  # Empty means git could not resolve an identity at all; git fails the commit
+  # itself in that case, with a clearer message than this hook would give.
+  [ -z "$_addr" ] && continue
+  if ! _identity_allowed "$_addr"; then
+    _label="$(printf '%s' "$_role" | tr '[:upper:]' '[:lower:]')"
+    identity_violations="${identity_violations}  ${_label}: ${_addr}
+"
+  fi
+done
+
+if [ -n "$identity_violations" ]; then
+  printf '%s\n' "${RED}--- pre-commit privacy guard: commit identity is not a declared one ---${RESET}"
+  printf '%s\n' "$identity_violations"
+  printf '%s\n' "${YELLOW}Author and committer metadata publish with the commit and cannot be${RESET}"
+  printf '%s\n' "${YELLOW}corrected later without rewriting history. Set the machine identity once:${RESET}"
+  printf '%s\n' ""
+  printf '%s\n' "  git config --global user.email '<ID>+<user>@users.noreply.github.com'"
+  printf '%s\n' "  git config --global user.name  '<user>'"
+  printf '%s\n' ""
+  printf '%s\n' "${YELLOW}The address is shown at github.com/settings/emails (Keep my email private).${RESET}"
+  printf '%s\n' "${YELLOW}Check for a per-repo override that beats the global:${RESET}  git config --local user.email"
+  printf '%s\n' "${YELLOW}If this repo genuinely commits under another identity, declare it in${RESET}"
+  printf '%s\n' "${YELLOW}.identity-allow (one address or *@domain per line), run  git add .identity-allow  and re-commit.${RESET}"
+  printf '%s\n' "${YELLOW}Only the staged or committed file counts; an unstaged edit is ignored.${RESET}"
+  exit 1
+fi
+
+extra_patterns_file="$repo_root/.privacy-patterns"
+
+# Load user-supplied patterns (per-clone, gitignored).
+EXTRA_PATTERNS=()
+if [ -f "$extra_patterns_file" ]; then
+  while IFS= read -r line; do
+    case "$line" in
+      ''|'#'*) continue ;;
+      *) EXTRA_PATTERNS+=("$line") ;;
+    esac
+  done < "$extra_patterns_file"
+fi
+
+ALL_PATTERNS=("${BUILTIN_PATTERNS[@]}" "${EXTRA_PATTERNS[@]}")
+
+# Self-match excludes — the scanner sources plus lib/patterns.sh (which now
+# holds the regex definitions) and the templates/ tree — are single-sourced
+# from lib/patterns.sh as PG_EXCLUDE_PATHS. Code review, not the hook, is the
+# control for changes to those files.
+EXCLUDE_PATHS=( "${PG_EXCLUDE_PATHS[@]}" )
+
+# Synthetic data declared in .privacy-allow (committed, one literal VALUE per
+# line). This file USED to list PATH globs that were excluded from the scan —
+# but "trust this whole directory" let a real device serial hide inside an
+# allow-listed tests/ folder and reach GitHub. So we allow by VALUE, never by
+# path: scan everything, then suppress a finding ONLY when the matched text is
+# exactly a declared synthetic value. An unknown identifier in any path —
+# fixtures included — still fires. Trust a string, never a location.
+ALLOW_VALUES=()
+while IFS= read -r raw; do
+  line="${raw%%#*}"                          # strip inline comment
+  line="${line#"${line%%[![:space:]]*}"}"    # ltrim
+  line="${line%"${line##*[![:space:]]}"}"    # rtrim
+  [ -z "$line" ] && continue
+  ALLOW_VALUES+=("$line")
+done < <(_staged_decl .privacy-allow)
+
+# Suppress a finding only if the matched text EXACTLY equals a declared value.
+# Exact, not substring: declaring a demo "AKIA…" key must not silently allow a
+# different real key that merely contains the same prefix.
+_is_allowed() {
+  local v="$1" a
+  for a in "${ALLOW_VALUES[@]}"; do [ "$v" = "$a" ] && return 0; done
+  return 1
+}
+
+# Keep every added line (`^+`), then strip exactly one leading '+' so the diff
+# prefix is gone but content that legitimately starts with '+' is preserved,
+# and ^-anchored patterns (e.g. the ADB device-serial) match real content. The
+# old `^\+[^+]` filter silently dropped added lines whose content began with
+# '+' (rendered `++…` in the diff), letting a leak on such a line slip past.
+#
+# The diff is also read into file<TAB>line<TAB>content records, so a block can
+# name where each match sits. Inside a hunk every '+' line is content; the
+# `+++ b/<path>` header is only read before the first hunk of a file.
+staged_loc="$(git -c core.quotePath=false diff --cached --unified=0 -- "${EXCLUDE_PATHS[@]}" | awk '
+  /^diff --git / { inhunk = 0; next }
+  !inhunk && /^\+\+\+ / {
+    p = substr($0, 5)
+    sub(/\t.*$/, "", p)                       # a name with a space ends the header with a tab
+    if (p ~ /^".*"$/) p = substr(p, 2, length(p) - 2)
+    if (p == "/dev/null") { f = ""; next }
+    sub(/^b\//, "", p); f = p
+    # The file NAME is scanned too (record line 0), as the plain diff scan did.
+    printf "%s\t0\t%s\n", f, f
+    next
+  }
+  /^@@ / { inhunk = 1; s = $3; sub(/^\+/, "", s); sub(/,.*/, "", s); n = s + 0; next }
+  inhunk && /^\+/ { printf "%s\t%d\t%s\n", f, n, substr($0, 2); n++ }
+' || true)"
+staged_added="$(printf '%s\n' "$staged_loc" | cut -f3- || true)"
+
+if [ -z "$staged_added" ]; then
+  exit 0
+fi
+
+# Where a matched value sits: "file:line" for up to five lines, "…" if more.
+_locate() {
+  V="$1" awk -F'\t' '
+    BEGIN { v = ENVIRON["V"] }
+    NF >= 3 {
+      c = $0; sub(/^[^\t]*\t[^\t]*\t/, "", c)
+      if (index(c, v)) { n++; if (n <= 5) out = out (out ? ", " : "") ($2 == 0 ? $1 " (file name)" : $1 ":" $2) }
+    }
+    END { if (n > 5) out = out ", ..."; print out }
+  ' <<<"$staged_loc"
+}
+
+violations=""
+allow_lines=""
+for pat in "${ALL_PATTERNS[@]}"; do
+  # Case-SENSITIVE (no -i). The patterns encode their own case (AKIA, IMEI,
+  # Samsung, PEM headers); -i made the device-serial rule over-match ordinary
+  # prose — e.g. "Google dependency" matched (Google)\s+[A-Z][A-Z0-9]{6,}
+  # because -i let "dependency" satisfy the uppercase serial class. Dropping -i
+  # kills that false alarm and aligns the hook with audit-privacy.sh, which
+  # already greps case-sensitive. Patterns needing case-tolerance bake it in.
+  # grep -o so we test the MATCHED VALUE against .privacy-allow, not the line.
+  while IFS= read -r m; do
+    [ -z "$m" ] && continue
+    _is_allowed "$m" && continue
+    violations="${violations}${RED}Pattern matched:${RESET} ${YELLOW}${pat}${RESET}  ->  ${m}
+  at $(_locate "$m")
+"
+    allow_lines="${allow_lines}${m}
+"
+  done < <(printf '%s\n' "$staged_added" | grep -Eo -- "$pat" | sort -u || true)
+done
+
+# --- Tightened bare-serial check (commit-stage) ---------------------------
+# A serial with no brand word in front of it (mid-line in a log or doc) slips
+# vendor_serial, and the broad shape [A-Z0-9]{10,14} alone would also flag git
+# SHAs and uppercase words. So pull CANDIDATES, then keep only the ones that
+# look like a real device serial: has a digit AND a non-hex letter [G-Z]. Git
+# SHAs are all-hex (no [G-Z]); uppercase words have no digit. Both fall out, so
+# bare serials get caught with few false alarms. (generic_serial stays probe-
+# only — this token-level filter is what makes a serial check safe at commit.)
+serial_hits=""
+while IFS= read -r tok; do
+  [ -z "$tok" ] && continue
+  [[ "$tok" == *[0-9]* ]] || continue      # must contain a digit
+  [[ "$tok" == *[G-Z]* ]] || continue      # must contain a non-hex letter
+  _is_allowed "$tok" && continue           # declared synthetic value? skip
+  serial_hits="${serial_hits}  ${tok}
+"
+done < <(printf '%s\n' "$staged_added" | grep -Eo '\b[A-Z0-9]{10,14}\b' | sort -u)
+if [ -n "$serial_hits" ]; then
+  serial_located=""
+  while IFS= read -r tok; do
+    [ -z "$tok" ] && continue
+    tok="${tok#"${tok%%[![:space:]]*}"}"
+    serial_located="${serial_located}  ${tok}  at $(_locate "$tok")
+"
+    allow_lines="${allow_lines}${tok}
+"
+  done <<<"$serial_hits"
+  violations="${violations}${RED}Pattern matched:${RESET} ${YELLOW}bare device serial (10-14 uppercase, digit + non-hex letter)${RESET}
+$serial_located
+"
+fi
+
+if [ -n "$violations" ]; then
+  printf '%s\n' "${RED}--- pre-commit privacy guard: staged content matches sensitive patterns ---${RESET}"
+  printf '%s\n' "$violations"
+  printf '%s\n' "${YELLOW}If a match is real, edit the file to remove the identifier, then re-stage and re-commit.${RESET}"
+  printf '%s\n' "${YELLOW}If a match is a false positive, declare the exact value in .privacy-allow${RESET}"
+  printf '%s\n' "${YELLOW}(committed, one literal value per line). Add:${RESET}"
+  printf '%s' "$allow_lines" | sort -u | sed 's/^/  /'
+  printf '%s\n' "${YELLOW}then run  git add .privacy-allow  and re-commit. Only the staged or committed file counts.${RESET}"
+  exit 1
+fi
+
+# --- Layer 1.5: egress guard — third-party network hosts in staged code ------
+# Flag any external http(s) host in staged CODE that is neither a universal
+# safe-default (PG_EGRESS_SAFE, from lib/patterns.sh) nor declared in the
+# committed .egress-allow. PROSE files (*.md, *.rst, *.txt, README/LICENSE/
+# CHANGELOG) are excluded — a link in documentation is a reference, not egress;
+# egress that matters lives in code and config. This makes "no third-party
+# service without a conscious decision" mechanical instead of a rule an author
+# (or an AI agent) has to remember. Allow by VALUE (a host or its dot-boundary
+# parent domain), never by path — same posture as the identifier scan above.
+#
+# MODE: report-only by DEFAULT — it warns and lets the commit through, so the
+# layer can roll out with zero friction while each repo's real egress is still
+# being curated. A repo opts into BLOCKING by adding a line reading `enforce`
+# to its .egress-allow (do that once the allowlist is trustworthy). The broad
+# URL scan intentionally errs toward noise; enforcing before curation would
+# wall off editing legitimate URL DATA (bookmarks, citations, feed lists).
+EGRESS_ALLOW=()
+EGRESS_ENFORCE=0
+while IFS= read -r raw; do
+  line="${raw%%#*}"                          # strip inline comment
+  line="${line#"${line%%[![:space:]]*}"}"    # ltrim
+  line="${line%"${line##*[![:space:]]}"}"    # rtrim
+  [ -z "$line" ] && continue
+  line="$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')"
+  if [ "$line" = "enforce" ]; then EGRESS_ENFORCE=1; continue; fi  # mode directive, not a host
+  EGRESS_ALLOW+=("$line")
+done < <(_staged_decl .egress-allow)
+
+# `enforce` only tightens, so a commit that deletes it (git rm --cached) or a
+# failed index read cannot turn enforcement off: the committed HEAD copy counts
+# too. Host declarations still come from the staged file only.
+while IFS= read -r raw; do
+  line="${raw%%#*}"
+  line="${line#"${line%%[![:space:]]*}"}"
+  line="${line%"${line##*[![:space:]]}"}"
+  line="$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')"
+  [ "$line" = "enforce" ] && EGRESS_ENFORCE=1
+done < <(git show HEAD:.egress-allow 2>/dev/null || true)
+
+# Staged added CODE lines: the identifier excludes PLUS prose/doc files.
+staged_code="$(git diff --cached --unified=0 -- "${EXCLUDE_PATHS[@]}" \
+  ':(exclude)*.md' ':(exclude)*.markdown' ':(exclude)*.rst' ':(exclude)*.txt' \
+  ':(exclude)*README*' ':(exclude)*CHANGELOG*' ':(exclude)*LICENSE*' \
+  | grep -E '^\+' | sed 's/^+//' || true)"
+
+if [ -n "$staged_code" ]; then
+  egress_hits=""
+  while IFS= read -r host; do
+    [ -z "$host" ] && continue
+    pg_egress_safe_host "$host" && continue
+    allowed=0
+    for a in "${EGRESS_ALLOW[@]}"; do
+      pg_host_matches "$host" "$a" && { allowed=1; break; }
+    done
+    [ "$allowed" = 1 ] && continue
+    egress_hits="${egress_hits}  ${host}
+"
+  done < <(printf '%s\n' "$staged_code" | pg_egress_extract)
+
+  if [ -n "$egress_hits" ]; then
+    if [ "$EGRESS_ENFORCE" = 1 ]; then
+      printf '%s\n' "${RED}--- pre-commit privacy guard: staged code adds third-party network host(s) ---${RESET}"
+      printf '%s\n' "${YELLOW}Not a universal safe-default, and not declared in .egress-allow:${RESET}"
+      printf '%s\n' "$egress_hits"
+      printf '%s\n' "${YELLOW}Prefer a same-origin / self-hosted alternative when one exists (the mission default).${RESET}"
+      printf '%s\n' "${YELLOW}If this egress is intended, add the host to .egress-allow (one per line), run  git add .egress-allow  and re-commit.${RESET}"
+      printf '%s\n' "${YELLOW}Only the staged or committed .egress-allow counts; an unstaged edit is ignored.${RESET}"
+      printf '%s\n' "${YELLOW}Bypass once for an unrelated emergency:${RESET}  git commit --no-verify"
+      exit 1
+    else
+      printf '%s\n' "${YELLOW}--- privacy guard: egress guard (report-only) — third-party network host(s) in staged code ---${RESET}"
+      printf '%s\n' "${YELLOW}Not a universal safe-default, and not declared in .egress-allow:${RESET}"
+      printf '%s\n' "$egress_hits"
+      printf '%s\n' "${YELLOW}Report-only: NOT blocking this commit. Add a real, intended host to .egress-allow;${RESET}"
+      printf '%s\n' "${YELLOW}once the list is trustworthy, add a line reading  enforce  to make this repo block.${RESET}"
+    fi
+  fi
+fi
+
+# ----------------------------------------------------------------------------
+# Layer 2: gitleaks. The bash patterns above cover workspace-specific things
+# gitleaks doesn't know about (device serials, /home/<user>/ paths, RFC1918
+# IPs). gitleaks adds ~150 cloud-provider patterns + entropy detection on top.
+#
+# Required, not optional. Per the workspace policy, we want the broader net.
+# If gitleaks is missing, fail clearly rather than silently letting commits
+# through with weaker coverage.
+# ----------------------------------------------------------------------------
+if ! command -v gitleaks >/dev/null 2>&1; then
+  printf '%s\n' "${RED}--- pre-commit privacy guard: gitleaks not installed ---${RESET}"
+  printf '%s\n' "${YELLOW}gitleaks is required by this repo's privacy guard. Install it once:${RESET}"
+  printf '%s\n' ""
+  printf '%s\n' "  Arch / CachyOS:  sudo pacman -S gitleaks"
+  printf '%s\n' "  Mint / Debian / Ubuntu:        download the latest gitleaks_*_linux_x64.tar.gz from"
+  printf '%s\n' "                                 https://github.com/gitleaks/gitleaks/releases and"
+  printf '%s\n' "                                 install the 'gitleaks' binary on PATH."
+  printf '%s\n' "  go-installed:                  go install github.com/gitleaks/gitleaks/v8@latest"
+  printf '%s\n' ""
+  printf '%s\n' "${YELLOW}Bypass once for an unrelated emergency:${RESET}  git commit --no-verify"
+  exit 1
+fi
+
+# Resolve the gitleaks config. A per-repo .gitleaks.toml at the repo root WINS
+# when present (the common case today — unchanged behavior). Only when the repo
+# ships no per-repo config do we fall back to the central privacy-guard copy,
+# resolved relative to this hook's own location (scripts/hooks/pre-commit ->
+# two dirs up = the privacy-guard root), the same dirname-chain trick the hook
+# already uses for lib/patterns.sh. This is the code half of the global-hook
+# migration: additive and dormant until a consumer stops shipping its own config.
+# If neither config exists, fail closed — consistent with the missing-lib and
+# missing-gitleaks postures above; we never scan with no config or skip silently.
+gl_config="$repo_root/.gitleaks.toml"
+if [ ! -f "$gl_config" ]; then
+  central_config="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/.gitleaks.toml"
+  if [ -f "$central_config" ]; then
+    gl_config="$central_config"
+  else
+    printf '%s\n' "${RED}--- pre-commit privacy guard: no gitleaks config found ---${RESET}"
+    printf '%s\n' "${YELLOW}Looked for a per-repo config at:${RESET}  $repo_root/.gitleaks.toml"
+    printf '%s\n' "${YELLOW}and the central privacy-guard config at:${RESET}  $central_config"
+    printf '%s\n' "${YELLOW}install incomplete — re-run install.sh --force${RESET}"
+    exit 1
+  fi
+fi
+
+# `protect --staged` scans the staged index, not the working tree. --redact
+# replaces the secret value in the report with [REDACTED] so the secret itself
+# is never written to terminal scrollback. --verbose prints each finding's rule,
+# file and line; without it the output is only "leaks found: N". --no-banner
+# suppresses the ASCII logo on every run.
+if ! gitleaks protect --staged --redact --verbose --no-banner --config="$gl_config" 2>&1; then
+  printf '%s\n' ""
+  printf '%s\n' "${RED}--- pre-commit privacy guard: gitleaks found one or more secrets ---${RESET}"
+  printf '%s\n' "${YELLOW}If a match is a real secret:${RESET}  remove it from the staged file, re-stage, re-commit."
+  printf '%s\n' "${YELLOW}If a match is a false positive:${RESET} add it to the [allowlist] in .gitleaks.toml"
+  printf '%s\n' "${YELLOW}                                ${RESET}(see comments in that file for the regex/path format)."
+  printf '%s\n' "${YELLOW}Bypass once for an unrelated emergency:${RESET}  git commit --no-verify"
+  exit 1
+fi
+
+exit 0
