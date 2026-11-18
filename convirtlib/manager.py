@@ -73,12 +73,71 @@ class Libvirt:
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip())
 
+    def network_xml(self, vm, name):
+        """The definition of one libvirt network, or None if unreadable."""
+        result = self._virsh(vm.uri, "net-dumpxml", name, readonly=True)
+        return result.stdout if result.returncode == 0 else None
+
+    def render_nodes(self, vm):
+        return render_nodes(system=not vm.session)
+
+
+def render_nodes(system=False, root="/dev/dri", sysfs="/sys/class/drm"):
+    """The GPU render nodes on this host, each with its kernel driver.
+
+    A session VM runs QEMU as this user, so a node counts as usable only
+    if this user can open it. libvirt opens one for a system VM itself.
+    """
+    nodes = []
+    try:
+        names = sorted(n for n in os.listdir(root) if n.startswith("renderD"))
+    except OSError:
+        return nodes
+    for name in names:
+        node = os.path.join(root, name)
+        driver = os.path.join(sysfs, name, "device", "driver")
+        try:
+            driver = os.path.basename(os.readlink(driver))
+        except OSError:
+            driver = "unknown driver"
+        usable = system or os.access(node, os.R_OK | os.W_OK)
+        nodes.append({"node": node, "driver": driver, "usable": usable})
+    return nodes
+
+
+def forward_mode(text):
+    """A libvirt network's forward mode; "isolated" when it forwards none."""
+    if text is None:
+        return None
+    try:
+        forward = core.parse(text).find("forward")
+    except core.ET.ParseError:
+        return None
+    if forward is None:
+        return "isolated"
+    return forward.get("mode", "nat")
+
 
 class Files:
-    """Each NAME.xml in a directory is a VM; NAME.live.xml means running."""
+    """Each NAME.xml in a directory is a VM; NAME.live.xml means running.
 
-    def __init__(self, directory):
+    NAME.xml under networks/ is a libvirt network. render is the list of
+    render nodes to report, or None to leave the host's GPU unsaid.
+    """
+
+    def __init__(self, directory, render=None):
         self.directory = directory
+        self.render = render
+
+    def network_xml(self, vm, name):
+        path = os.path.join(self.directory, "networks", name + ".xml")
+        if not os.path.exists(path):
+            return None
+        with open(path) as handle:
+            return handle.read()
+
+    def render_nodes(self, vm):
+        return self.render
 
     def _path(self, vm, live=False):
         suffix = ".live.xml" if live else ".xml"
@@ -128,8 +187,25 @@ class Manager:
     def stored(self, vm):
         return core.parse(self.backend.xml(vm))
 
+    def host_facts(self, vm, root):
+        """What the host says about the networks and GPU a VM would use."""
+        names = {i.find("source").get("network")
+                 for i in root.findall("devices/interface")
+                 if i.get("type") == "network" and i.find("source") is not None}
+        networks = {}
+        for name in sorted(n for n in names if n):
+            mode = forward_mode(self.backend.network_xml(vm, name))
+            if mode:
+                networks[name] = mode
+        facts = {"networks": networks}
+        render = self.backend.render_nodes(vm)
+        if render is not None:
+            facts["render"] = render
+        return facts
+
     def state(self, vm):
-        state = core.read_state(self.stored(vm))
+        root = self.stored(vm)
+        state = core.read_state(root, self.host_facts(vm, root))
         if not vm.session \
                 and state["display"]["value"] not in core.OWN_WINDOW:
             # A system VM runs as another user and cannot open a window

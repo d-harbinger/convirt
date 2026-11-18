@@ -177,8 +177,15 @@ def _sound_has_input(sound):
     return True
 
 
-def read_state(root):
-    """Return {switch: {value, enabled, meaning}} for one definition."""
+def read_state(root, host=None):
+    """Return {switch: {value, enabled, meaning}} for one definition.
+
+    host holds what only the machine running the VM can say, gathered by
+    the manager: "networks", the forward mode of each libvirt network, and
+    "render", the GPU render nodes as dicts of node, driver and usable.
+    Missing keys leave those parts of the meanings unsaid.
+    """
+    host = host or {}
     state = {}
     sounds = _devices(root).findall("sound")
 
@@ -201,15 +208,28 @@ def read_state(root):
         state["sound"] = ("off", True, "no sound card")
 
     kind = display_kind(root)
+    render = host.get("render")
+    usable = [r for r in render or () if r["usable"]]
     if _accel_requested(root) and _has_gl_display(root):
-        if kind in OWN_WINDOW:
-            meaning = "renders on host GPU"
+        if render is not None and not render:
+            state["accel3d"] = ("on", True,
+                                "set, but this host has no GPU render node")
+        elif render is not None and not usable:
+            state["accel3d"] = ("on", True,
+                                "set, but %s cannot be opened" %
+                                render[0]["node"])
         else:
-            meaning = "renders on host GPU; picture is copied, may tear"
-        state["accel3d"] = ("on", True, meaning)
+            meaning = "set for the host GPU"
+            if usable:
+                meaning += " (%s)" % usable[0]["driver"]
+            if kind not in OWN_WINDOW:
+                meaning += "; picture is copied, may tear"
+            state["accel3d"] = ("on", True, meaning)
     elif _accel_requested(root):
         state["accel3d"] = ("off", True,
                             "requested, but no OpenGL display; software")
+    elif render is not None and not render:
+        state["accel3d"] = ("off", False, "this host has no GPU render node")
     else:
         state["accel3d"] = ("off", True, "software rendering")
 
@@ -233,15 +253,54 @@ def read_state(root):
         state["clipboard"] = ("off", True, "not shared")
 
     interfaces = _devices(root).findall("interface")
+    modes = host.get("networks", {})
     if not interfaces:
         state["network"] = ("off", False, "no network card")
     elif all(_link_down(i) for i in interfaces):
         state["network"] = ("off", True, "cable unplugged")
     else:
-        state["network"] = ("on", True, "can reach host, LAN, internet")
+        plugged = [attachment(i, modes) for i in interfaces
+                   if not _link_down(i)]
+        state["network"] = ("on", True, "plugged into " + "; ".join(plugged))
 
     return {name: {"value": v, "enabled": e, "meaning": m}
             for name, (v, e, m) in state.items()}
+
+
+# What libvirt's forward mode makes of a virtual network, as a label.
+NETWORK_KINDS = {
+    "nat": "NAT network",
+    "isolated": "isolated network",
+    "route": "routed network",
+    "open": "open network",
+    "bridge": "bridged network",
+    "passthrough": "passthrough network",
+    "private": "private network",
+    "vepa": "VEPA network",
+    "hostdev": "host-device network",
+}
+
+
+def attachment(interface, modes=None):
+    """Name what one network card is plugged into, from the definition.
+
+    modes maps a libvirt network's name to its forward mode ("isolated"
+    when it has none); without it a network is named by type alone.
+    """
+    kind = interface.get("type")
+    source = interface.find("source")
+    source = {} if source is None else source.attrib
+    if kind == "network":
+        name = source.get("network", "?")
+        mode = (modes or {}).get(name)
+        return "%s %s" % (NETWORK_KINDS.get(mode, "network"), name)
+    if kind == "bridge":
+        return "host bridge %s" % source.get("bridge", "?")
+    if kind == "direct":
+        return "macvtap on %s" % source.get("dev", "?")
+    if kind == "user":
+        return "user-mode networking"
+    return "%s interface" % kind
 
 
 def values(root):

@@ -7,7 +7,8 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from convirtlib import core  # noqa: E402
-from convirtlib.manager import Files, Manager  # noqa: E402
+from convirtlib.manager import (  # noqa: E402
+    Files, Manager, forward_mode, render_nodes)
 
 SPICE_VM = """
 <domain type='kvm'>
@@ -251,6 +252,50 @@ class CoreTest(unittest.TestCase):
         core.apply(root, "network", "on")
         self.assertIsNone(root.find("devices/interface/link"))
 
+    def test_network_names_what_the_card_is_plugged_into(self):
+        cases = [
+            ("<interface type='network'><source network='default'/>"
+             "</interface>", {"default": "nat"}, "NAT network default"),
+            ("<interface type='network'><source network='lab'/>"
+             "</interface>", {"lab": "isolated"}, "isolated network lab"),
+            ("<interface type='network'><source network='lab'/>"
+             "</interface>", {}, "network lab"),
+            ("<interface type='bridge'><source bridge='br0'/></interface>",
+             {}, "host bridge br0"),
+            ("<interface type='direct'><source dev='eth0' mode='bridge'/>"
+             "</interface>", {}, "macvtap on eth0"),
+            ("<interface type='user'/>", {}, "user-mode networking"),
+        ]
+        for xml, modes, label in cases:
+            self.assertEqual(core.attachment(core.parse(xml), modes), label)
+
+    def test_network_meaning_claims_no_reach(self):
+        root = core.parse(SPICE_VM)
+        meaning = core.read_state(root)["network"]["meaning"]
+        self.assertEqual(meaning, "plugged into user-mode networking")
+        self.assertNotIn("LAN", meaning)
+        self.assertNotIn("internet", meaning)
+
+    def test_3d_row_reports_the_host_render_node(self):
+        root = core.parse(SPICE_VM)
+        state = core.read_state(root, {"render": []})["accel3d"]
+        self.assertEqual((state["value"], state["enabled"]), ("off", False))
+        self.assertIn("no GPU render node", state["meaning"])
+
+        core.apply(root, "accel3d", "on")
+        node = {"node": "/dev/dri/renderD128", "driver": "amdgpu"}
+        state = core.read_state(root, {"render": []})["accel3d"]
+        self.assertEqual(state["value"], "on")
+        self.assertIn("no GPU render node", state["meaning"])
+        state = core.read_state(
+            root, {"render": [dict(node, usable=False)]})["accel3d"]
+        self.assertIn("/dev/dri/renderD128 cannot be opened",
+                      state["meaning"])
+        state = core.read_state(
+            root, {"render": [dict(node, usable=True)]})["accel3d"]
+        self.assertIn("(amdgpu)", state["meaning"])
+        self.assertIn("may tear", state["meaning"])
+
     def test_raw_fragments_show_the_switch_xml_only(self):
         text = core.raw_fragments(core.parse(SPICE_VM))
         self.assertIn("<sound", text)
@@ -336,6 +381,42 @@ class ManagerTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.manager.restore_slot(self.vm, "../sample")
 
+
+    def test_state_reads_the_network_forward_mode(self):
+        text = SPICE_VM.replace(
+            "<interface type='user'>",
+            "<interface type='network'><source network='default'/>")
+        for name, xml in (("sample", text),
+                          ("networks/default",
+                           "<network><name>default</name>"
+                           "<forward mode='nat'/></network>")):
+            path = os.path.join(self.vms, name + ".xml")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as handle:
+                handle.write(xml)
+        state = self.manager.state(self.manager.find("sample"))
+        self.assertEqual(state["network"]["meaning"],
+                         "plugged into NAT network default")
+
+    def test_forward_mode_without_forward_is_isolated(self):
+        self.assertEqual(forward_mode("<network><name>x</name></network>"),
+                         "isolated")
+        self.assertEqual(forward_mode("<network><forward/></network>"), "nat")
+        self.assertIsNone(forward_mode(None))
+
+    def test_render_nodes_read_the_driver(self):
+        dev = os.path.join(self.tmp.name, "dri")
+        sysfs = os.path.join(self.tmp.name, "drm")
+        os.makedirs(dev)
+        os.makedirs(os.path.join(sysfs, "renderD128", "device"))
+        open(os.path.join(dev, "renderD128"), "w").close()
+        os.makedirs(os.path.join(self.tmp.name, "drivers", "i915"))
+        os.symlink(os.path.join(self.tmp.name, "drivers", "i915"),
+                   os.path.join(sysfs, "renderD128", "device", "driver"))
+        nodes = render_nodes(root=dev, sysfs=sysfs)
+        self.assertEqual(nodes, [{"node": os.path.join(dev, "renderD128"),
+                                  "driver": "i915", "usable": True}])
+        self.assertEqual(render_nodes(root=os.path.join(dev, "none")), [])
 
     def test_pending_compares_running_and_stored(self):
         with open(os.path.join(self.vms, "sample.live.xml"), "w") as handle:
