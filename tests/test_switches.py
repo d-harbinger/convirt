@@ -649,6 +649,9 @@ class ScreensTest(unittest.TestCase):
         self.assertEqual(state["value"], "2")
         self.assertIn("virt-manager only the first", state["meaning"])
         core.apply(root, "display", "sdl", WAYLAND)
+        self.assertIn("SDL shows only the first",
+                      core.read_state(root)["screens"]["meaning"])
+        core.apply(root, "display", "gtk", WAYLAND)
         self.assertIn("untested", core.read_state(root)["screens"]["meaning"])
         for bad in ("0", "5", "two"):
             with self.assertRaises(ValueError):

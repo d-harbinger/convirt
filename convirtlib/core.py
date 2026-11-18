@@ -478,8 +478,12 @@ def _screens_state(root, kind):
         return ("1", True, "one screen")
     if kind == "spice":
         meaning = "Open shows each; virt-manager only the first"
-    elif kind in OWN_WINDOW:
-        meaning = "how QEMU's own window shows the extra ones is untested"
+    elif kind == "sdl":
+        # Seen on a guest: the SDL window reports only the first screen
+        # as present, so the guest keeps the others disconnected.
+        meaning = "SDL shows only the first; use virt-manager for more"
+    elif kind == "gtk":
+        meaning = "how the GTK window shows the extra ones is untested"
     else:
         meaning = "the viewer decides how they show"
     return (heads, True, "%s; %s" % (screens_label(heads), meaning))

@@ -15,7 +15,7 @@ convirt shows the sound, display and host-link settings of a libvirt virtual mac
 | Sample rate | the guest's choice, 44.1 kHz, 48 kHz | Under **Latency and sample rate**: a fixed rate both ways, so QEMU does not convert. |
 | 3D acceleration | on, off | Whether the guest renders on the host GPU through virgl. |
 | Display | Own window (SDL), Own window (GTK), virt-manager | A QEMU window on the desktop, of either kind, or a SPICE display shown inside virt-manager. |
-| Screens | 1 to 4 | How many screens the guest sees (libvirt's `heads` on a virtio or QXL video model). With the SPICE display, **Open** shows each screen in its own virt-viewer window, which can go full screen on its own monitor (*View → Displays* turns each one on); virt-manager's console shows only the first. How QEMU's own SDL or GTK window shows extra screens is not yet checked. |
+| Screens | 1 to 4 | How many screens the guest sees (libvirt's `heads` on a virtio or QXL video model). With the SPICE display, **Open** shows each screen in its own virt-viewer window, which can go full screen on its own monitor (*View → Displays* turns each one on); virt-manager's console shows only the first. The SDL window shows only the first screen: it does not report the others as present, so the guest keeps them disconnected. How the GTK window shows extra screens is not yet checked. |
 | Shared clipboard | on, off | Whether host and guest share the clipboard. Only the virt-manager display has one. |
 | Network | unplugged, or a connection | What the network card is plugged into: a libvirt network, a host bridge, macvtap on a wired host interface, or user-mode networking. The list holds what the host has. |
 
