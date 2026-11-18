@@ -365,8 +365,13 @@ class Window(Gtk.Window):
         if not self.vms:
             self.vm = None
             self.set_sensitive_rows(False)
-            self.waiting_text.set_text("No VM to show")
+            self.waiting_text.set_text(
+                "No VM found under qemu:///session or qemu:///system")
             self.apply_button.set_visible(False)
+            self.power.set_sensitive(False)
+            self.open_button.set_sensitive(False)
+            for meaning in self.meanings.values():
+                meaning.set_text("")
             return
         labels = [vm.label for vm in self.vms]
         index = labels.index(keep) if keep in labels else 0
