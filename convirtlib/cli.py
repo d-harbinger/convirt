@@ -24,15 +24,19 @@ def main(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
 
     # Test options: a directory of XML files instead of libvirt, a
-    # separate backup directory, and a PNG of the window.
-    backend, backups, snapshot = Libvirt(), None, None
-    while args and args[0] in ("--files", "--backups", "--snapshot"):
+    # separate backup directory, a PNG of the window, and a change
+    # (SWITCH=VALUE) made in the window before the PNG is drawn.
+    backend, backups, snapshot, change = Libvirt(), None, None, None
+    while args and args[0] in ("--files", "--backups", "--snapshot",
+                               "--change"):
         option, value = args[0], args[1]
         del args[:2]
         if option == "--files":
             backend = Files(value)
         elif option == "--backups":
             backups = value
+        elif option == "--change":
+            change = tuple(value.split("=", 1))
         else:
             snapshot = value
     manager = Manager(backend, backups)
@@ -45,7 +49,7 @@ def main(argv=None):
                 print("The window needs GTK 3 for Python (PyGObject).")
                 print("The commands still work: convirt list")
                 return 1
-            ui.run(manager, snapshot)
+            ui.run(manager, snapshot, change)
         elif args == ["list"]:
             for vm in manager.list():
                 print("%-24s %s" % (vm.label,

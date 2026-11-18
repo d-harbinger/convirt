@@ -1,6 +1,6 @@
 # convirt
 
-![The convirt window: one row per switch for a virtual machine, then save slots, with a line saying what each state means](docs/screenshot.png)
+![The convirt window: switches grouped under Sound, Picture and Links to the host; a green line confirms a network change, and the changed row is marked as waiting for a full restart, with what runs now and what the next start brings](docs/screenshot.png)
 
 convirt shows the security- and display-relevant settings of a libvirt virtual machine as six switches, and changes them without hand-editing XML. Save slots keep exact copies of a configuration.
 

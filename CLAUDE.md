@@ -20,7 +20,7 @@ A desktop tool that shows the microphone, sound output, 3D acceleration, display
 
 The tests cover `core.py` and the change and undo flow on sample definitions through the `Files` backend, which treats a directory of XML files as the set of VMs. Keep `core.py` free of libvirt and GTK imports so it stays testable that way.
 
-Three hidden options exist for checking the rest without a real VM: `--files DIR` swaps libvirt for that directory, `--backups DIR` moves the undo store, and `--snapshot FILE` draws the window to a PNG and exits. `docs/screenshot.png` is made with them.
+Four hidden options exist for checking the rest without a real VM: `--files DIR` swaps libvirt for that directory (its `networks/` folder holds libvirt networks), `--backups DIR` moves the undo store, `--snapshot FILE` draws the window to a PNG and exits, and `--change SWITCH=VALUE` makes one change in the window before the PNG is drawn. `docs/screenshot.png` is made with them, from a running VM after `--change network=network:lab`.
 
 Whether a display choice shows a picture is a property of the host's graphics driver and is verified on the host, by starting a VM.
 
