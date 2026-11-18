@@ -25,6 +25,7 @@ Switches:
   rate       default or a sample rate in Hz, both ways
   accel3d, clipboard   on or off
   display    sdl, gtk or spice
+  screens    1 to 4 (virtio or QXL video)
   network    off, on, network:NAME, bridge:NAME, direct:DEVICE (macvtap)
              or user
 A change is stored at once and takes effect at the next full shut off and

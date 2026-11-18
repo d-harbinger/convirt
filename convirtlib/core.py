@@ -32,7 +32,10 @@ ET.register_namespace(
     "libosinfo", "http://libosinfo.org/xmlns/libvirt/domain/1.0")
 
 SWITCHES = ("sound", "mic", "audio", "speaker", "recorder", "latency",
-            "rate", "accel3d", "display", "clipboard", "network")
+            "rate", "accel3d", "display", "screens", "clipboard", "network")
+# Video models that take a number of screens (libvirt's heads).
+MULTIHEAD_MODELS = ("virtio", "qxl")
+MAX_SCREENS = 4
 # The card first, then the rows that only mean something with a card.
 SOUND_ROWS = SWITCHES[:7]
 TITLES = {
@@ -45,6 +48,7 @@ TITLES = {
     "rate": "Sample rate",
     "accel3d": "3D acceleration",
     "display": "Display",
+    "screens": "Screens",
     "clipboard": "Shared clipboard",
     "network": "Network",
 }
@@ -452,9 +456,50 @@ def sound_choices(root, host=None):
     return choices
 
 
+def screen_choices():
+    return [(str(n), screens_label(str(n)))
+            for n in range(1, MAX_SCREENS + 1)]
+
+
+def screens_label(value):
+    return "1 screen" if value == "1" else "%s screens" % value
+
+
+def _screens_state(root, kind):
+    """(value, enabled, meaning) for the number of screens the guest sees."""
+    model = _video_model(root)
+    if model is None or model.get("type") not in MULTIHEAD_MODELS:
+        kind_name = "none" if model is None else model.get("type")
+        return ("1", False, "video model %s has one screen" % kind_name)
+    heads = model.get("heads", "1")
+    if not heads.isdigit() or int(heads) < 1:
+        heads = "1"
+    if heads == "1":
+        return ("1", True, "one screen")
+    if kind == "spice":
+        meaning = "Open shows each; virt-manager only the first"
+    elif kind in OWN_WINDOW:
+        meaning = "how QEMU's own window shows the extra ones is untested"
+    else:
+        meaning = "the viewer decides how they show"
+    return (heads, True, "%s; %s" % (screens_label(heads), meaning))
+
+
+def _set_screens(root, value):
+    if not value.isdigit() or not 1 <= int(value) <= MAX_SCREENS:
+        raise ValueError("screens takes 1 to %d" % MAX_SCREENS)
+    model = _video_model(root)
+    if model is None or model.get("type") not in MULTIHEAD_MODELS:
+        raise ValueError("only a virtio or QXL video model has more than "
+                         "one screen")
+    model.set("heads", value)
+
+
 def value_label(switch, value):
-    """A sound switch's value as the window names it, without the host;
+    """A sound or screens value as the window names it, without the host;
     used for what a running VM has, which may not be on today's lists."""
+    if switch == "screens":
+        return screens_label(value)
     tables = {
         "sound": [("off", "Off")] + list(SOUND_MODELS),
         "mic": list(MIC_LABELS),
@@ -622,6 +667,8 @@ def read_state(root, host=None):
     else:
         state["display"] = (kind, True, "display type: %s" % kind)
 
+    state["screens"] = _screens_state(root, kind)
+
     if kind != "spice":
         state["clipboard"] = ("off", False, "not shared with this display")
     elif _clipboard_channels(root):
@@ -786,6 +833,8 @@ def apply(root, switch, value, facts=None):
         _set_rate(root, value)
     elif switch == "accel3d":
         _set_accel(root, _on(value))
+    elif switch == "screens":
+        _set_screens(root, value)
     elif switch == "display":
         _set_display(root, value, facts)
     elif switch == "clipboard":

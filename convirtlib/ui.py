@@ -78,7 +78,7 @@ def show_caution(icon, found):
 SECTIONS = (
     ("Sound", ("sound", "mic", "audio", "speaker", "recorder"),
      ("latency", "rate")),
-    ("Picture", ("accel3d", "display"), ()),
+    ("Picture", ("accel3d", "display", "screens"), ()),
     ("Links to the host", ("clipboard", "network"), ()),
 )
 MORE = {"Sound": "Latency and sample rate"}
@@ -92,6 +92,7 @@ ICONS = {
     "rate": "emblem-system-symbolic",
     "accel3d": "applications-graphics-symbolic",
     "display": "video-display-symbolic",
+    "screens": "video-joined-displays-symbolic",
     "clipboard": "edit-paste-symbolic",
     "network": "network-wired-symbolic",
 }

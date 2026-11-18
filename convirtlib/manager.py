@@ -356,6 +356,7 @@ class Manager:
         root = self.stored(vm)
         choices = core.sound_choices(root, host or self.host_facts(vm, root))
         choices["display"] = list(core.DISPLAY_LABELS.items())
+        choices["screens"] = core.screen_choices()
         choices["network"] = self.network_choices(vm)
         return choices
 

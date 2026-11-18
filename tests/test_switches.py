@@ -65,7 +65,8 @@ class CoreTest(unittest.TestCase):
             "sound": "ich9", "mic": "on", "audio": "spice",
             "speaker": "default", "recorder": "default",
             "latency": "default", "rate": "default", "accel3d": "off",
-            "display": "spice", "clipboard": "on", "network": "user"})
+            "display": "spice", "screens": "1", "clipboard": "on",
+            "network": "user"})
 
     def test_clipboard_off_and_on(self):
         root = core.parse(SPICE_VM)
@@ -635,6 +636,32 @@ class ManagerTest(unittest.TestCase):
             raise FileNotFoundError(command[0])
 
         self.assertIsNone(audio_devices(missing))
+
+
+class ScreensTest(unittest.TestCase):
+    def test_screens_set_heads_on_virtio(self):
+        root = core.parse(SPICE_VM)
+        self.assertEqual(values(root)["screens"], "1")
+        core.apply(root, "screens", "2")
+        model = root.find("devices/video/model")
+        self.assertEqual(model.get("heads"), "2")
+        state = core.read_state(root)["screens"]
+        self.assertEqual(state["value"], "2")
+        self.assertIn("virt-viewer", state["meaning"])
+        core.apply(root, "display", "sdl", WAYLAND)
+        self.assertIn("untested", core.read_state(root)["screens"]["meaning"])
+        for bad in ("0", "5", "two"):
+            with self.assertRaises(ValueError):
+                core.apply(root, "screens", bad)
+
+    def test_screens_fixed_without_a_multihead_model(self):
+        root = core.parse(SPICE_VM.replace("type='virtio' heads='1'",
+                                           "type='vga' heads='1'"))
+        state = core.read_state(root)["screens"]
+        self.assertEqual((state["value"], state["enabled"]), ("1", False))
+        with self.assertRaises(ValueError):
+            core.apply(root, "screens", "2")
+        self.assertEqual(core.value_label("screens", "3"), "3 screens")
 
 
 class CautionTest(unittest.TestCase):
