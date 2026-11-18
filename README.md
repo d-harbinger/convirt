@@ -1,8 +1,8 @@
 # convirt
 
-![The convirt window: five switches for one virtual machine, with a line saying what each state means](docs/screenshot.png)
+![The convirt window: one row per switch for a virtual machine, then presets and save slots, with a line saying what each state means](docs/screenshot.png)
 
-convirt shows the security- and display-relevant settings of a libvirt virtual machine as five switches, and changes them without hand-editing XML.
+convirt shows the security- and display-relevant settings of a libvirt virtual machine as six switches, and changes them without hand-editing XML. Presets set several switches at once, and save slots keep exact copies of a configuration.
 
 | Switch | Values | What it controls |
 |---|---|---|
@@ -10,6 +10,7 @@ convirt shows the security- and display-relevant settings of a libvirt virtual m
 | Sound output | on, off | Whether the guest has a sound card at all. |
 | 3D acceleration | on, off | Whether the guest renders on the host GPU through virgl. |
 | Display | Own window (SDL), Own window (GTK), virt-manager | A QEMU window on the desktop, of either kind, or a SPICE display shown inside virt-manager. |
+| Shared clipboard | on, off | Whether host and guest share the clipboard. Only the virt-manager display has one. |
 | Network | on, off | Whether the virtual network cable is plugged in. |
 
 Each row states what its current value means. A change is stored at once and takes effect at the next full shut off and start of the VM; while a VM runs, the window lists the switches that are waiting for that restart.
@@ -54,7 +55,36 @@ The same switches work from a shell:
 ./convirt undo workstation
 ```
 
-`mic`, `sound`, `accel3d` and `network` take `on` or `off`. `display` takes `sdl`, `gtk` or `spice`.
+`mic`, `sound`, `accel3d`, `clipboard` and `network` take `on` or `off`. `display` takes `sdl`, `gtk` or `spice`.
+
+## Presets
+
+A preset sets several switches in one change, with one undo step.
+
+| Preset | Command name | What it sets |
+|---|---|---|
+| Locked down | `lockdown` | 3D acceleration, sound output, microphone, shared clipboard and network all off. The display stays as it is. |
+| Meetings and streaming | `media` | Own window (SDL), 3D acceleration, sound output, microphone and network all on. |
+
+```sh
+./convirt preset workstation lockdown
+```
+
+A switch the VM cannot take is left as it was and named in the result.
+
+Locked down covers only what the switches cover. Shared folders, host devices passed through to the guest and USB redirection ports also link a VM to its host and have no switch; the window and `convirt show` list them under "Also attached" so they are not missed. Remove them in virt-manager for a VM that holds untrusted software.
+
+## Save slots
+
+A slot is an exact, named copy of one VM's configuration, including the parts that have no switch.
+
+```sh
+./convirt save workstation "video calls"
+./convirt slots workstation
+./convirt restore workstation "video calls"
+```
+
+The configuration from before convirt first changed a VM is kept in a slot named `original`, which cannot be overwritten. Restoring a slot is itself a change, so undo returns to the configuration it replaced.
 
 ## What a change does
 

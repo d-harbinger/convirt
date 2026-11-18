@@ -53,6 +53,34 @@ class Window(Gtk.Window):
         for name in core.SWITCHES:
             rows.add(self.build_row(name))
 
+        self.attached = Gtk.Label(xalign=0)
+        self.attached.set_line_wrap(True)
+        self.attached.get_style_context().add_class("convirt-meaning")
+        box.pack_start(self.attached, False, False, 0)
+
+        self.extras = []
+        presets = Gtk.Box(spacing=8)
+        presets.pack_start(self.side_label("Preset"), False, False, 0)
+        for name, preset in core.PRESETS.items():
+            button = Gtk.Button(label=preset["label"])
+            button.connect("clicked", self.on_preset, name)
+            presets.pack_start(button, False, False, 0)
+            self.extras.append(button)
+        box.pack_start(presets, False, False, 0)
+
+        slots = Gtk.Box(spacing=8)
+        slots.pack_start(self.side_label("Slot"), False, False, 0)
+        self.slot_picker = Gtk.ComboBoxText()
+        slots.pack_start(self.slot_picker, True, True, 0)
+        self.restore = Gtk.Button(label="Restore")
+        self.restore.connect("clicked", self.on_restore)
+        slots.pack_start(self.restore, False, False, 0)
+        save = Gtk.Button(label="Save as…")
+        save.connect("clicked", self.on_save)
+        slots.pack_start(save, False, False, 0)
+        self.extras += [self.slot_picker, save]
+        box.pack_start(slots, False, False, 0)
+
         self.status = Gtk.Label(xalign=0)
         self.status.set_line_wrap(True)
         self.status.get_style_context().add_class("convirt-status")
@@ -72,6 +100,11 @@ class Window(Gtk.Window):
 
         self.connect("destroy", Gtk.main_quit)
         self.reload_list()
+
+    def side_label(self, text):
+        label = Gtk.Label(label=text, xalign=0)
+        label.set_size_request(52, -1)
+        return label
 
     def build_row(self, name):
         row = Gtk.ListBoxRow()
@@ -125,9 +158,10 @@ class Window(Gtk.Window):
         self.picker.set_active(labels.index(keep) if keep in labels else 0)
 
     def set_sensitive_rows(self, sensitive):
-        for control in self.controls.values():
+        for control in list(self.controls.values()) + self.extras:
             control.set_sensitive(sensitive)
         self.undo.set_sensitive(sensitive)
+        self.restore.set_sensitive(sensitive)
 
     def reload(self, message=None):
         """Read the selected VM again and redraw every row."""
@@ -136,10 +170,25 @@ class Window(Gtk.Window):
         try:
             state = self.manager.state(self.vm)
             pending = self.manager.pending(self.vm)
+            attached = core.exposures(self.manager.stored(self.vm))
+            slots = self.manager.slots(self.vm)
         except RuntimeError as error:
             self.set_sensitive_rows(False)
             self.status.set_text(str(error))
             return
+        for control in self.extras:
+            control.set_sensitive(True)
+        self.attached.set_text(
+            "Also attached: " + ", ".join(attached) if attached
+            else "Nothing else links this VM to the host")
+        chosen = self.slot_picker.get_active_text()
+        self.slot_picker.remove_all()
+        for slot in slots:
+            self.slot_picker.append_text(slot)
+        if slots:
+            self.slot_picker.set_active(
+                slots.index(chosen) if chosen in slots else 0)
+        self.restore.set_sensitive(bool(slots))
         self.loading = True
         for name in core.SWITCHES:
             entry = state[name]
@@ -197,6 +246,56 @@ class Window(Gtk.Window):
             self.reload("Not changed: %s" % error)
             return
         self.reload()
+
+    def on_preset(self, _button, name):
+        label = core.PRESETS[name]["label"]
+        try:
+            skipped = self.manager.apply_preset(self.vm, name)
+        except RuntimeError as error:
+            self.reload("Not changed: %s" % error)
+            return
+        if skipped:
+            names = ", ".join(core.TITLES[s] for s in skipped)
+            self.reload("%s applied; left as it was: %s" % (label, names))
+        else:
+            self.reload("%s applied" % label)
+
+    def on_restore(self, _button):
+        slot = self.slot_picker.get_active_text()
+        if slot is None:
+            return
+        try:
+            self.manager.restore_slot(self.vm, slot)
+        except RuntimeError as error:
+            self.reload("Not restored: %s" % error)
+            return
+        self.reload("Slot restored: %s" % slot)
+
+    def on_save(self, _button):
+        dialog = Gtk.Dialog(title="Save slot", transient_for=self,
+                            modal=True)
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Save", Gtk.ResponseType.OK)
+        dialog.set_default_response(Gtk.ResponseType.OK)
+        entry = Gtk.Entry()
+        entry.set_placeholder_text("Slot name")
+        entry.set_max_length(32)
+        entry.set_activates_default(True)
+        area = dialog.get_content_area()
+        area.set_border_width(12)
+        area.pack_start(entry, False, False, 0)
+        dialog.show_all()
+        response = dialog.run()
+        name = entry.get_text()
+        dialog.destroy()
+        if response != Gtk.ResponseType.OK:
+            return
+        try:
+            self.manager.save_slot(self.vm, name)
+        except RuntimeError as error:
+            self.reload("Not saved: %s" % error)
+            return
+        self.reload("Slot saved: %s" % name.strip())
 
     def on_undo(self, _button):
         try:
