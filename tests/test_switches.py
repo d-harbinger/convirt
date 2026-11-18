@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from convirtlib import core  # noqa: E402
 from convirtlib.manager import (  # noqa: E402
-    Files, Manager, forward_mode, render_nodes)
+    Files, Manager, forward_mode, host_interfaces, render_nodes)
 
 SPICE_VM = """
 <domain type='kvm'>
@@ -62,7 +62,7 @@ class CoreTest(unittest.TestCase):
         root = core.parse(SPICE_VM)
         self.assertEqual(values(root), {
             "mic": "on", "sound": "on", "accel3d": "off",
-            "display": "spice", "clipboard": "on", "network": "on"})
+            "display": "spice", "clipboard": "on", "network": "user"})
 
     def test_clipboard_off_and_on(self):
         root = core.parse(SPICE_VM)
@@ -252,6 +252,34 @@ class CoreTest(unittest.TestCase):
         core.apply(root, "network", "on")
         self.assertIsNone(root.find("devices/interface/link"))
 
+    def test_network_moves_the_card_to_another_cable(self):
+        root = core.parse(SPICE_VM.replace(
+            "<interface type='user'>",
+            "<interface type='user'><mac address='sentinel-address'/>"))
+        core.apply(root, "network", "off")
+        core.apply(root, "network", "bridge:br0")
+        card = root.find("devices/interface")
+        self.assertEqual(card.get("type"), "bridge")
+        self.assertEqual(card.find("source").get("bridge"), "br0")
+        self.assertIsNone(card.find("link"), "a new cable is plugged in")
+        self.assertEqual(card.find("mac").get("address"), "sentinel-address")
+        self.assertEqual(card.find("model").get("type"), "virtio")
+        self.assertEqual(values(root)["network"], "bridge:br0")
+
+        core.apply(root, "network", "direct:eth0")
+        self.assertEqual(card.find("source").attrib,
+                         {"dev": "eth0", "mode": "bridge"})
+        core.apply(root, "network", "user")
+        self.assertIsNone(card.find("source"))
+        self.assertEqual(values(root)["network"], "user")
+        with self.assertRaises(ValueError):
+            core.apply(root, "network", "bridge:")
+
+    def test_on_counts_as_set_for_any_plugged_connection(self):
+        self.assertTrue(core.same_value("network", "bridge:br0", "on"))
+        self.assertFalse(core.same_value("network", "off", "on"))
+        self.assertFalse(core.same_value("network", "user", "bridge:br0"))
+
     def test_network_names_what_the_card_is_plugged_into(self):
         cases = [
             ("<interface type='network'><source network='default'/>"
@@ -324,7 +352,7 @@ class ManagerTest(unittest.TestCase):
         self.assertEqual(self.manager.state(self.vm)["mic"]["value"], "off")
         self.manager.undo(self.vm)
         state = self.manager.state(self.vm)
-        self.assertEqual(state["network"]["value"], "on")
+        self.assertEqual(state["network"]["value"], "user")
         self.assertEqual(state["mic"]["value"], "off")
         self.manager.undo(self.vm)
         with open(os.path.join(self.vms, "sample.xml")) as handle:
@@ -397,6 +425,38 @@ class ManagerTest(unittest.TestCase):
         state = self.manager.state(self.manager.find("sample"))
         self.assertEqual(state["network"]["meaning"],
                          "plugged into NAT network default")
+
+    def test_network_choices_list_what_the_host_offers(self):
+        os.makedirs(os.path.join(self.vms, "networks"))
+        for name, forward in (("default", "<forward mode='nat'/>"),
+                              ("lab", "")):
+            with open(os.path.join(self.vms, "networks", name + ".xml"),
+                      "w") as handle:
+                handle.write("<network><name>%s</name>%s</network>"
+                             % (name, forward))
+        manager = Manager(
+            Files(self.vms, interfaces={"bridges": ["br0"],
+                                        "wired": ["eth0"]}),
+            os.path.join(self.tmp.name, "backups"))
+        choices = manager.network_choices(manager.find("sample"))
+        self.assertEqual(choices, [
+            ("off", "Unplugged"),
+            ("network:default", "NAT network default"),
+            ("network:lab", "Isolated network lab"),
+            ("bridge:br0", "Host bridge br0"),
+            ("direct:eth0", "Macvtap on eth0"),
+            ("user", "User-mode networking"),
+        ])
+
+    def test_host_interfaces_split_bridges_from_wired_cards(self):
+        net = os.path.join(self.tmp.name, "net")
+        for name, parts in (("br0", ["bridge"]), ("eth0", ["device"]),
+                            ("wlan0", ["device", "wireless"]), ("lo", [])):
+            os.makedirs(os.path.join(net, name))
+            for part in parts:
+                os.makedirs(os.path.join(net, name, part))
+        self.assertEqual(host_interfaces(net),
+                         {"bridges": ["br0"], "wired": ["eth0"]})
 
     def test_forward_mode_without_forward_is_isolated(self):
         self.assertEqual(forward_mode("<network><name>x</name></network>"),

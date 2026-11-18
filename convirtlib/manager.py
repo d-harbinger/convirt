@@ -81,6 +81,33 @@ class Libvirt:
     def render_nodes(self, vm):
         return render_nodes(system=not vm.session)
 
+    def network_names(self, vm):
+        result = self._virsh(vm.uri, "net-list", "--all", "--name",
+                             readonly=True)
+        if result.returncode != 0:
+            return []
+        return [n.strip() for n in result.stdout.split("\n") if n.strip()]
+
+    def host_interfaces(self, vm):
+        return host_interfaces()
+
+
+def host_interfaces(sysfs="/sys/class/net"):
+    """This host's bridges, and its wired cards that macvtap can sit on."""
+    bridges, wired = [], []
+    try:
+        names = sorted(os.listdir(sysfs))
+    except OSError:
+        return {"bridges": bridges, "wired": wired}
+    for name in names:
+        path = os.path.join(sysfs, name)
+        if os.path.isdir(os.path.join(path, "bridge")):
+            bridges.append(name)
+        elif os.path.exists(os.path.join(path, "device")) \
+                and not os.path.isdir(os.path.join(path, "wireless")):
+            wired.append(name)
+    return {"bridges": bridges, "wired": wired}
+
 
 def render_nodes(system=False, root="/dev/dri", sysfs="/sys/class/drm"):
     """The GPU render nodes on this host, each with its kernel driver.
@@ -125,9 +152,10 @@ class Files:
     render nodes to report, or None to leave the host's GPU unsaid.
     """
 
-    def __init__(self, directory, render=None):
+    def __init__(self, directory, render=None, interfaces=None):
         self.directory = directory
         self.render = render
+        self.interfaces = interfaces or {"bridges": [], "wired": []}
 
     def network_xml(self, vm, name):
         path = os.path.join(self.directory, "networks", name + ".xml")
@@ -138,6 +166,16 @@ class Files:
 
     def render_nodes(self, vm):
         return self.render
+
+    def network_names(self, vm):
+        directory = os.path.join(self.directory, "networks")
+        if not os.path.isdir(directory):
+            return []
+        return sorted(f[:-4] for f in os.listdir(directory)
+                      if f.endswith(".xml"))
+
+    def host_interfaces(self, vm):
+        return self.interfaces
 
     def _path(self, vm, live=False):
         suffix = ".live.xml" if live else ".xml"
@@ -203,6 +241,27 @@ class Manager:
             facts["render"] = render
         return facts
 
+    def network_choices(self, vm):
+        """[(value, label)] for every connection this host offers the VM."""
+        modes = {name: forward_mode(self.backend.network_xml(vm, name))
+                 for name in self.backend.network_names(vm)}
+        keys = ["off"] + ["network:%s" % n for n in sorted(modes)]
+        interfaces = self.backend.host_interfaces(vm)
+        keys += ["bridge:%s" % b for b in interfaces["bridges"]]
+        keys += ["direct:%s" % d for d in interfaces["wired"]]
+        if vm.session:
+            keys.append("user")
+        current = core.values(self.stored(vm))["network"]
+        if current not in keys and current != "?":
+            keys.append(current)
+        return [(k, core.connection_label(k, modes)) for k in keys]
+
+    def live_values(self, vm):
+        """The running VM's switch values, or None when it is shut off."""
+        if not vm.running:
+            return None
+        return core.values(core.parse(self.backend.xml(vm, live=True)))
+
     def state(self, vm):
         root = self.stored(vm)
         state = core.read_state(root, self.host_facts(vm, root))
@@ -229,7 +288,7 @@ class Manager:
             raise RuntimeError("a system VM cannot use its own window")
         original = self.backend.xml(vm)
         root = core.parse(original)
-        if core.values(root)[switch] == value:
+        if core.same_value(switch, core.values(root)[switch], value):
             return False
         try:
             core.apply(root, switch, value, facts)
@@ -244,7 +303,7 @@ class Manager:
         # libvirt fills in defaults when it stores a definition; if one of
         # them undid the change, apply once more on what it stored.
         root = self.stored(vm)
-        if core.values(root)[switch] != value:
+        if not core.same_value(switch, core.values(root)[switch], value):
             core.apply(root, switch, value, facts)
             self.backend.define(vm, core.serialize(root))
         return True

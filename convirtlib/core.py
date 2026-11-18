@@ -259,12 +259,50 @@ def read_state(root, host=None):
     elif all(_link_down(i) for i in interfaces):
         state["network"] = ("off", True, "cable unplugged")
     else:
-        plugged = [attachment(i, modes) for i in interfaces
-                   if not _link_down(i)]
-        state["network"] = ("on", True, "plugged into " + "; ".join(plugged))
+        plugged = [i for i in interfaces if not _link_down(i)]
+        meaning = "plugged into " + "; ".join(
+            attachment(i, modes) for i in plugged)
+        if len(interfaces) > 1:
+            meaning += "; %d cards, the first one switches" % len(interfaces)
+        state["network"] = (connection_key(plugged[0]), True, meaning)
 
     return {name: {"value": v, "enabled": e, "meaning": m}
             for name, (v, e, m) in state.items()}
+
+
+def connection_key(interface):
+    """The Network switch's value for a plugged-in card.
+
+    network:NAME, bridge:NAME, direct:DEVICE or user; the Network switch
+    takes any of them, "off" to unplug, and "on" to plug back in.
+    """
+    kind = interface.get("type")
+    source = interface.find("source")
+    source = {} if source is None else source.attrib
+    field = {"network": "network", "bridge": "bridge", "direct": "dev"}
+    if kind in field:
+        return "%s:%s" % (kind, source.get(field[kind], "?"))
+    return kind or "?"
+
+
+def same_value(switch, current, wanted):
+    """Whether a switch already holds a wanted value."""
+    if switch == "network" and wanted == "on":
+        return current != "off"
+    return current == wanted
+
+
+def connection_label(key, modes=None):
+    """A Network switch value as the label the window shows."""
+    if key == "off":
+        return "Unplugged"
+    kind, _, name = key.partition(":")
+    source = {"network": "network", "bridge": "bridge", "direct": "dev"}
+    element = ET.Element("interface", {"type": kind})
+    if kind in source:
+        ET.SubElement(element, "source", {source[kind]: name})
+    text = attachment(element, modes)
+    return text[0].upper() + text[1:]
 
 
 # What libvirt's forward mode makes of a virtual network, as a label.
@@ -364,7 +402,10 @@ def apply(root, switch, value, facts=None):
     elif switch == "clipboard":
         _set_clipboard(root, _on(value))
     elif switch == "network":
-        _set_network(root, _on(value))
+        if value in ("on", "off"):
+            _set_network(root, _on(value))
+        else:
+            _set_connection(root, value)
     else:
         raise ValueError("unknown switch: %s" % switch)
 
@@ -570,3 +611,35 @@ def _set_network(root, on):
             interface.remove(link)
         if not on:
             ET.SubElement(interface, "link", {"state": "down"})
+
+
+def _set_connection(root, key):
+    """Plug the first card into network:NAME, bridge:NAME, direct:DEV or user.
+
+    The card keeps its model and MAC address, so the guest sees the same
+    network card on a different cable.
+    """
+    interfaces = _devices(root).findall("interface")
+    if not interfaces:
+        raise ValueError("no network card")
+    kind, _, name = key.partition(":")
+    fields = {"network": "network", "bridge": "bridge", "direct": "dev"}
+    if kind == "user" and not name:
+        source = None
+    elif kind in fields and name:
+        source = {fields[kind]: name}
+        if kind == "direct":
+            source["mode"] = "bridge"
+    else:
+        raise ValueError(
+            "network takes on, off, network:NAME, bridge:NAME, "
+            "direct:DEVICE or user")
+    interface = interfaces[0]
+    interface.set("type", kind)
+    for tag in ("source", "link"):
+        for element in interface.findall(tag):
+            interface.remove(element)
+    if source is not None:
+        # source comes right after mac in libvirt's own order
+        position = 1 if interface.find("mac") is not None else 0
+        interface.insert(position, ET.Element("source", source))

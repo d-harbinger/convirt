@@ -9,8 +9,9 @@
     convirt save VM SLOT          save the current config under a name
     convirt restore VM SLOT       put a saved config back
 
-Switches: mic, sound, accel3d, clipboard, network take on or off; display
-takes sdl, gtk or spice. A change is stored at once and takes effect at the next
+Switches: mic, sound, accel3d, clipboard take on or off; display takes sdl,
+gtk or spice; network takes off, on, network:NAME, bridge:NAME, direct:DEVICE
+(macvtap) or user. A change is stored at once and takes effect at the next
 full shut off and start of the VM.
 """
 import sys

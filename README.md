@@ -11,7 +11,7 @@ convirt shows the security- and display-relevant settings of a libvirt virtual m
 | 3D acceleration | on, off | Whether the guest renders on the host GPU through virgl. |
 | Display | Own window (SDL), Own window (GTK), virt-manager | A QEMU window on the desktop, of either kind, or a SPICE display shown inside virt-manager. |
 | Shared clipboard | on, off | Whether host and guest share the clipboard. Only the virt-manager display has one. |
-| Network | on, off | Whether the virtual network cable is plugged in. |
+| Network | unplugged, or a connection | What the network card is plugged into: a libvirt network, a host bridge, macvtap on a wired host interface, or user-mode networking. The list holds what the host has. |
 
 Each row states what its current value means. A change is stored at once and takes effect at the next full shut off and start of the VM; while a VM runs, the window lists the switches that are waiting for that restart.
 
@@ -55,7 +55,7 @@ The same switches work from a shell:
 ./convirt undo workstation
 ```
 
-`mic`, `sound`, `accel3d`, `clipboard` and `network` take `on` or `off`. `display` takes `sdl`, `gtk` or `spice`.
+`mic`, `sound`, `accel3d` and `clipboard` take `on` or `off`. `display` takes `sdl`, `gtk` or `spice`. `network` takes `off`, `on` (plug the cable back in), `network:NAME`, `bridge:NAME`, `direct:DEVICE` (macvtap) or `user`; the card keeps its model and MAC address.
 
 ## Also attached
 
