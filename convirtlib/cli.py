@@ -5,9 +5,13 @@
     convirt show VM               show every switch of one VM
     convirt set VM SWITCH VALUE   change one switch
     convirt undo VM               restore the config before the last change
+    convirt preset VM PRESET      apply a preset: lockdown or media
+    convirt slots VM              list the saved copies of a VM's config
+    convirt save VM SLOT          save the current config under a name
+    convirt restore VM SLOT       put a saved config back
 
-Switches: mic, sound, accel3d, network take on or off; display takes
-sdl, gtk or spice. A change is stored at once and takes effect at the next
+Switches: mic, sound, accel3d, clipboard, network take on or off; display
+takes sdl, gtk or spice. A change is stored at once and takes effect at the next
 full shut off and start of the VM.
 """
 import sys
@@ -53,6 +57,9 @@ def main(argv=None):
                 print("%-16s %-6s %s" % (core.TITLES[name],
                                          state[name]["value"],
                                          state[name]["meaning"]))
+            attached = core.exposures(manager.stored(vm))
+            if attached:
+                print("also attached: " + ", ".join(attached))
             pending = manager.pending(vm)
             if pending:
                 print("waiting for next full start: " + ", ".join(pending))
@@ -62,6 +69,20 @@ def main(argv=None):
             print("changed" if changed else "already set")
         elif len(args) == 2 and args[0] == "undo":
             manager.undo(manager.find(args[1]))
+            print("restored")
+        elif len(args) == 3 and args[0] == "preset":
+            skipped = manager.apply_preset(manager.find(args[1]), args[2])
+            print("applied")
+            if skipped:
+                print("left as it was: " + ", ".join(skipped))
+        elif len(args) == 2 and args[0] == "slots":
+            for name in manager.slots(manager.find(args[1])):
+                print(name)
+        elif len(args) == 3 and args[0] == "save":
+            manager.save_slot(manager.find(args[1]), args[2])
+            print("saved")
+        elif len(args) == 3 and args[0] == "restore":
+            manager.restore_slot(manager.find(args[1]), args[2])
             print("restored")
         else:
             print(__doc__.strip())

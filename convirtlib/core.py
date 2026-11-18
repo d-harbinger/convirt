@@ -24,13 +24,30 @@ ET.register_namespace("qemu", QEMU_NS)
 ET.register_namespace(
     "libosinfo", "http://libosinfo.org/xmlns/libvirt/domain/1.0")
 
-SWITCHES = ("mic", "sound", "accel3d", "display", "network")
+SWITCHES = ("mic", "sound", "accel3d", "display", "clipboard", "network")
 TITLES = {
     "mic": "Microphone",
     "sound": "Sound output",
     "accel3d": "3D acceleration",
     "display": "Display",
+    "clipboard": "Shared clipboard",
     "network": "Network",
+}
+CLIPBOARD_CHANNEL = "com.redhat.spice.0"
+
+# A preset is a list of switch positions applied in order as one change.
+# A position the VM cannot take (no sound card to mute, say) is skipped.
+PRESETS = {
+    "lockdown": {
+        "label": "Locked down",
+        "set": (("accel3d", "off"), ("sound", "off"), ("mic", "off"),
+                ("clipboard", "off"), ("network", "off")),
+    },
+    "media": {
+        "label": "Meetings and streaming",
+        "set": (("display", "sdl"), ("accel3d", "on"), ("sound", "on"),
+                ("mic", "on"), ("network", "on")),
+    },
 }
 DISPLAY_LABELS = {
     "sdl": "Own window (SDL)",
@@ -223,6 +240,13 @@ def read_state(root):
     else:
         state["display"] = (kind, True, "display type: %s" % kind)
 
+    if kind != "spice":
+        state["clipboard"] = ("off", False, "not shared with this display")
+    elif _clipboard_channels(root):
+        state["clipboard"] = ("on", True, "host and guest share it")
+    else:
+        state["clipboard"] = ("off", True, "not shared")
+
     interfaces = _devices(root).findall("interface")
     if not interfaces:
         state["network"] = ("off", False, "no network card")
@@ -237,6 +261,49 @@ def read_state(root):
 
 def values(root):
     return {name: s["value"] for name, s in read_state(root).items()}
+
+
+def _clipboard_channels(root):
+    return [c for c in _devices(root).findall("channel")
+            if c.get("type") == "spicevmc"
+            and c.find("target") is not None
+            and c.find("target").get("name") == CLIPBOARD_CHANNEL]
+
+
+def exposures(root):
+    """Name what links the guest to the host and has no switch here."""
+    devices = _devices(root)
+    found = []
+    for tag, one, many in (
+            ("filesystem", "shared folder", "shared folders"),
+            ("hostdev", "host device passed through",
+             "host devices passed through"),
+            ("redirdev", "USB redirection port", "USB redirection ports")):
+        count = len(devices.findall(tag))
+        if count:
+            found.append("%d %s" % (count, one if count == 1 else many))
+    return found
+
+
+def apply_preset(root, name, facts=None, fixed=()):
+    """Apply a preset in place. Return the switches it had to skip.
+
+    Switches named in fixed are left alone and reported as skipped.
+    """
+    if name not in PRESETS:
+        raise ValueError("unknown preset: %s" % name)
+    skipped = []
+    for switch, value in PRESETS[name]["set"]:
+        if values(root)[switch] == value:
+            continue
+        if switch in fixed:
+            skipped.append(switch)
+            continue
+        try:
+            apply(root, switch, value, facts)
+        except ValueError:
+            skipped.append(switch)
+    return skipped
 
 
 def raw_fragments(root):
@@ -271,6 +338,8 @@ def apply(root, switch, value, facts=None):
         _set_accel(root, _on(value))
     elif switch == "display":
         _set_display(root, value, facts)
+    elif switch == "clipboard":
+        _set_clipboard(root, _on(value))
     elif switch == "network":
         _set_network(root, _on(value))
     else:
@@ -447,6 +516,21 @@ def _set_env(root, name, value):
         ET.SubElement(cmdline, env_tag, {"name": name, "value": value})
     elif cmdline is not None and len(cmdline) == 0:
         root.remove(cmdline)
+
+
+def _set_clipboard(root, on):
+    devices = _devices(root)
+    if display_kind(root) != "spice":
+        if on:
+            raise ValueError(
+                "the clipboard is only shared with the virt-manager display")
+        return
+    for channel in _clipboard_channels(root):
+        devices.remove(channel)
+    if on:
+        channel = ET.SubElement(devices, "channel", {"type": "spicevmc"})
+        ET.SubElement(channel, "target",
+                      {"type": "virtio", "name": CLIPBOARD_CHANNEL})
 
 
 def _link_down(interface):

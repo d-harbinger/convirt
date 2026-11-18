@@ -12,6 +12,8 @@ from . import core
 
 URIS = ("qemu:///session", "qemu:///system")
 KEEP_BACKUPS = 20
+# The slot that holds a VM's definition from before convirt first changed it.
+ORIGINAL = "original"
 
 
 class Vm:
@@ -171,6 +173,81 @@ class Manager:
             self.backend.define(vm, core.serialize(root))
         return True
 
+    def apply_preset(self, vm, name, facts=None):
+        """Apply a preset as one change. Return the switches it skipped."""
+        if name not in core.PRESETS:
+            raise RuntimeError("unknown preset: %s" % name)
+        # A system VM cannot open a window in this desktop session.
+        fixed = () if vm.session else ("display",)
+        original = self.backend.xml(vm)
+        root = core.parse(original)
+        before = core.values(root)
+        skipped = core.apply_preset(root, name, facts, fixed)
+        if core.values(root) == before:
+            return skipped
+        backup = self._save_backup(vm, original)
+        try:
+            self.backend.define(vm, core.serialize(root))
+        except RuntimeError:
+            os.remove(backup)
+            raise
+        # Same second pass as change(): re-apply on what libvirt stored.
+        root = self.stored(vm)
+        stored = core.values(root)
+        core.apply_preset(root, name, facts, fixed)
+        if core.values(root) != stored:
+            self.backend.define(vm, core.serialize(root))
+        return skipped
+
+    # ------------------------------------------------------------- slots
+
+    def slots(self, vm):
+        """Names of the saved copies of this VM's definition."""
+        directory = self._slot_dir(vm)
+        if not os.path.isdir(directory):
+            return []
+        return sorted(f[:-4] for f in os.listdir(directory)
+                      if f.endswith(".xml"))
+
+    def save_slot(self, vm, name):
+        """Keep an exact copy of the stored definition under a name."""
+        name = name.strip()
+        allowed = all(c.isalnum() or c in " -_" for c in name)
+        if not name or len(name) > 32 or not allowed:
+            raise RuntimeError(
+                "slot name: 1 to 32 letters, digits, spaces, - or _")
+        if name == ORIGINAL and ORIGINAL in self.slots(vm):
+            raise RuntimeError("the original slot is kept as it is")
+        self._write_private(self._slot_path(vm, name), self.backend.xml(vm))
+
+    def restore_slot(self, vm, name):
+        """Put a saved definition back. Undo returns to the one replaced."""
+        if name not in self.slots(vm):
+            raise RuntimeError("no slot named %s" % name)
+        with open(self._slot_path(vm, name)) as handle:
+            text = handle.read()
+        backup = self._save_backup(vm, self.backend.xml(vm))
+        try:
+            self.backend.define(vm, text)
+        except RuntimeError:
+            os.remove(backup)
+            raise
+
+    def _slot_dir(self, vm):
+        return os.path.join(self._vm_dir(vm), "slots")
+
+    def _slot_path(self, vm, name):
+        return os.path.join(self._slot_dir(vm), name + ".xml")
+
+    def _write_private(self, path, text):
+        slot_dir = os.path.dirname(path)
+        os.makedirs(os.path.dirname(slot_dir), mode=0o700, exist_ok=True)
+        os.makedirs(slot_dir, mode=0o700, exist_ok=True)
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+                             0o600)
+        with os.fdopen(descriptor, "w") as handle:
+            handle.write(text)
+
     def can_undo(self, vm):
         return bool(self._backups(vm))
 
@@ -198,6 +275,8 @@ class Manager:
     def _save_backup(self, vm, text):
         directory = self._vm_dir(vm)
         os.makedirs(directory, mode=0o700, exist_ok=True)
+        if ORIGINAL not in self.slots(vm):
+            self._write_private(self._slot_path(vm, ORIGINAL), text)
         path = os.path.join(directory, "%d.xml" % time.time_ns())
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
                              0o600)
