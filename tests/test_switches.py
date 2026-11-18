@@ -8,7 +8,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from convirtlib import core  # noqa: E402
 from convirtlib.manager import (  # noqa: E402
-    Files, Manager, forward_mode, host_interfaces, render_nodes)
+    Files, Manager, audio_devices, forward_mode, host_interfaces,
+    render_nodes)
 
 SPICE_VM = """
 <domain type='kvm'>
@@ -61,7 +62,9 @@ class CoreTest(unittest.TestCase):
     def test_reads_the_starting_state(self):
         root = core.parse(SPICE_VM)
         self.assertEqual(values(root), {
-            "mic": "on", "sound": "on", "accel3d": "off",
+            "sound": "ich9", "mic": "on", "audio": "spice",
+            "speaker": "default", "recorder": "default",
+            "latency": "default", "rate": "default", "accel3d": "off",
             "display": "spice", "clipboard": "on", "network": "user"})
 
     def test_clipboard_off_and_on(self):
@@ -115,8 +118,113 @@ class CoreTest(unittest.TestCase):
         self.assertEqual(values(root)["sound"], "off")
         self.assertEqual(values(root)["mic"], "off")
         core.apply(root, "sound", "on")
-        self.assertEqual(values(root)["sound"], "on")
+        self.assertEqual(values(root)["sound"], "ich9")
         self.assertEqual(values(root)["mic"], "off")
+
+    def test_sound_card_model_changes_keep_what_fits(self):
+        root = core.parse(SPICE_VM.replace(
+            "<sound model='ich9'/>",
+            "<sound model='ich9'><codec type='micro'/>"
+            "<address type='pci' bus='0x00' slot='0x1b'/></sound>"))
+        core.apply(root, "sound", "usb")
+        card = root.find("devices/sound")
+        self.assertEqual(card.get("model"), "usb")
+        self.assertEqual(list(card), [])
+        state = core.read_state(root)["mic"]
+        self.assertEqual((state["value"], state["enabled"]), ("off", False))
+        self.assertIn("no input", state["meaning"])
+        core.apply(root, "sound", "ich6")
+        self.assertEqual(root.find("devices/sound/codec").get("type"),
+                         "output")
+        core.apply(root, "sound", "ac97")
+        self.assertEqual(values(root)["mic"], "on")
+        core.apply(root, "sound", "ich9")
+        self.assertIsNone(root.find("devices/sound/codec"))
+        with self.assertRaises(ValueError):
+            core.apply(root, "sound", "bogus")
+
+    def test_microphone_codec_choices(self):
+        root = core.parse(SPICE_VM)
+        core.apply(root, "mic", "micro")
+        self.assertEqual(root.find("devices/sound/codec").get("type"),
+                         "micro")
+        state = core.read_state(root)["mic"]
+        self.assertEqual(state["value"], "micro")
+        self.assertIn("a microphone", state["meaning"])
+        self.assertIn("viewer", state["meaning"])
+        with self.assertRaises(ValueError):
+            core.apply(root, "mic", "loud")
+
+    def test_host_sound_system_changes_and_strips_its_own_options(self):
+        root = core.parse(SPICE_VM)
+        with self.assertRaises(ValueError):
+            core.apply(root, "speaker", "sink-a")
+        core.apply(root, "audio", "pulseaudio")
+        core.apply(root, "speaker", "sink-a")
+        core.apply(root, "recorder", "source-a")
+        core.apply(root, "latency", "20")
+        core.apply(root, "rate", "48000")
+        audio = root.find("devices/audio")
+        self.assertEqual([c.tag for c in audio], ["input", "output"])
+        output = audio.find("output")
+        self.assertEqual(output.get("name"), "sink-a")
+        self.assertEqual(output.get("latency"), "20000")
+        self.assertEqual(audio.find("input").get("latency"), "20000")
+        self.assertEqual(output.get("fixedSettings"), "yes")
+        self.assertEqual(output.get("mixingEngine"), "yes")
+        self.assertEqual(output.find("settings").get("frequency"), "48000")
+        self.assertEqual(
+            {k: values(root)[k] for k in ("audio", "speaker", "recorder",
+                                         "latency", "rate")},
+            {"audio": "pulseaudio", "speaker": "sink-a",
+             "recorder": "source-a", "latency": "20", "rate": "48000"})
+        core.apply(root, "audio", "pipewire", WAYLAND)
+        self.assertEqual(audio.get("runtimeDir"), "/run/user/1000")
+        self.assertIsNone(output.get("name"))
+        self.assertIsNone(output.get("latency"))
+        self.assertEqual(output.get("fixedSettings"), "yes")
+        core.apply(root, "rate", "default")
+        self.assertEqual(list(audio), [])
+        core.apply(root, "audio", "default")
+        self.assertIsNone(root.find("devices/audio"))
+        self.assertEqual(values(root)["audio"], "default")
+
+    def test_spice_sound_needs_the_spice_display(self):
+        root = core.parse(SPICE_VM)
+        core.apply(root, "display", "sdl", WAYLAND)
+        with self.assertRaises(ValueError):
+            core.apply(root, "audio", "spice")
+        choices = dict(core.sound_choices(root)["audio"])
+        self.assertNotIn("spice", choices)
+
+    def test_recorder_needs_an_input_on_the_card(self):
+        root = core.parse(SPICE_VM)
+        core.apply(root, "audio", "pulseaudio")
+        core.apply(root, "mic", "off")
+        self.assertFalse(core.read_state(root)["recorder"]["enabled"])
+        with self.assertRaises(ValueError):
+            core.apply(root, "recorder", "source-a")
+
+    def test_sound_meanings_use_what_the_host_has(self):
+        root = core.parse(SPICE_VM)
+        core.apply(root, "audio", "pipewire", WAYLAND)
+        core.apply(root, "speaker", "sink-a")
+        host = {"sinks": [("sink-a", "Desk speakers")], "sources": [],
+                "system": True, "audio_types": {"pulseaudio"}}
+        state = core.read_state(root, host)
+        self.assertEqual(state["speaker"]["meaning"], "Desk speakers")
+        self.assertIn("not installed", state["audio"]["meaning"])
+        host["audio_types"] = {"pipewire"}
+        state = core.read_state(root, host)
+        self.assertIn("system's user", state["audio"]["meaning"])
+        self.assertEqual(state["recorder"]["meaning"],
+                         "the host's default input")
+        choices = core.sound_choices(root, host)
+        self.assertEqual(choices["speaker"][1], ("sink-a", "Desk speakers"))
+        self.assertIn(("pulseaudio", "PulseAudio (not installed)"),
+                      choices["audio"])
+        self.assertEqual(core.sound_choices(core.parse(QXL_VM))["mic"],
+                         [("on", "Fixed: input")])
 
     def test_3d_on_spice_adds_a_headless_renderer(self):
         root = core.parse(SPICE_VM)
@@ -186,7 +294,9 @@ class CoreTest(unittest.TestCase):
         spice = root.find("devices/graphics")
         self.assertEqual(spice.find("listen").get("type"), "none")
         self.assertIsNone(spice.get("port"))
-        self.assertEqual(root.find("devices/audio").get("type"), "spice")
+        # The sound system chosen for the own window stays; it plays on
+        # the host either way.
+        self.assertEqual(root.find("devices/audio").get("type"), "pipewire")
         self.assertIsNone(root.find("{%s}commandline" % core.QEMU_NS))
         self.assertEqual(
             sorted(c.get("type") for c in root.findall("devices/channel")),
@@ -486,6 +596,45 @@ class ManagerTest(unittest.TestCase):
         self.assertEqual(self.manager.pending(vm), [])
         self.manager.change(vm, "mic", "off")
         self.assertEqual(self.manager.pending(vm), ["mic"])
+
+    def test_host_sound_comes_from_audio_json(self):
+        with open(os.path.join(self.vms, "audio.json"), "w") as handle:
+            handle.write('{"sinks": [["sink-a", "Desk speakers"]], '
+                         '"sources": [["mic-a", "Headset"]], '
+                         '"types": ["spice", "pipewire"]}')
+        choices = self.manager.choices(self.vm)
+        self.assertIn(("mic-a", "Headset"), choices["recorder"])
+        self.assertIn(("pulseaudio", "PulseAudio (not installed)"),
+                      choices["audio"])
+        with self.assertRaises(RuntimeError):
+            self.manager.change(self.vm, "audio", "pulseaudio")
+        self.assertFalse(self.manager.can_undo(self.vm))
+        self.assertTrue(self.manager.change(self.vm, "audio", "pipewire"))
+
+    def test_audio_devices_skips_monitors(self):
+        outputs = {
+            "sinks": '[{"name": "sink-a", "description": "Desk speakers",'
+                     ' "properties": {"device.class": "sound"}}]',
+            "sources": '[{"name": "sink-a.monitor", "description": "M",'
+                       ' "properties": {"device.class": "monitor"}},'
+                       ' {"name": "mic-a", "description": "Headset",'
+                       ' "properties": {}}]'}
+
+        class Result:
+            def __init__(self, text):
+                self.returncode, self.stdout = 0, text
+
+        def run(command, **_kwargs):
+            return Result(outputs[command[-1]])
+
+        self.assertEqual(audio_devices(run), {
+            "sinks": [("sink-a", "Desk speakers")],
+            "sources": [("mic-a", "Headset")]})
+
+        def missing(command, **_kwargs):
+            raise FileNotFoundError(command[0])
+
+        self.assertIsNone(audio_devices(missing))
 
 
 if __name__ == "__main__":

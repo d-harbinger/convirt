@@ -1,19 +1,24 @@
 # convirt
 
-![The convirt window: switches grouped under Sound, Picture and Links to the host; a green line confirms a network change, and the changed row is marked as waiting for a full restart, with what runs now and what the next start brings](docs/screenshot.png)
+![The convirt window: rows grouped under Sound (card, microphone, host sound system, output, input, and latency and sample rate under an expander), Picture and Links to the host; a green line confirms a change of host sound to PipeWire, the changed row is marked as waiting for a full restart, and an amber line offers Restart to apply](docs/screenshot.png)
 
-convirt shows the security- and display-relevant settings of a libvirt virtual machine as six switches, and changes them without hand-editing XML. Save slots keep exact copies of a configuration.
+convirt shows the sound, display and host-link settings of a libvirt virtual machine as a short list of rows, and changes them without hand-editing XML. Save slots keep exact copies of a configuration.
 
-| Switch | Values | What it controls |
+| Row | Values | What it controls |
 |---|---|---|
-| Microphone | on, off | Whether the guest has a recording device. Off gives the sound card a playback-only codec. |
-| Sound output | on, off | Whether the guest has a sound card at all. |
+| Sound card | off, or a model: Intel HDA (ICH9, ICH6), AC97, USB audio, virtio sound, ES1370, SB16 | Which sound card the guest has, if any. Each model says whether it records: USB audio and SB16 play only. |
+| Microphone | none, microphone, line in | On an Intel HDA card, the codec: `hda-output` plays only, `hda-micro` gives the guest a microphone, `hda-duplex` (QEMU's default) a line in. Other cards have a fixed input. |
+| Host sound | PipeWire, PulseAudio, SPICE, ALSA, SDL, JACK, OSS, D-Bus, none | The host sound system QEMU plays into and records from. SPICE sends the sound to the viewer and needs the virt-manager display. A system whose QEMU module is missing is marked "not installed". |
+| Plays to | the host's default output, or one of its outputs | With PipeWire or PulseAudio, which host output the guest plays to. The list holds what the host has. |
+| Records from | the host's default input, or one of its inputs | With PipeWire or PulseAudio, which host input the guest's microphone hears. |
+| Latency | default, 10 to 200 ms | Under **Latency and sample rate**: the latency asked of PipeWire or PulseAudio. |
+| Sample rate | the guest's choice, 44.1 kHz, 48 kHz | Under **Latency and sample rate**: a fixed rate both ways, so QEMU does not convert. |
 | 3D acceleration | on, off | Whether the guest renders on the host GPU through virgl. |
 | Display | Own window (SDL), Own window (GTK), virt-manager | A QEMU window on the desktop, of either kind, or a SPICE display shown inside virt-manager. |
 | Shared clipboard | on, off | Whether host and guest share the clipboard. Only the virt-manager display has one. |
 | Network | unplugged, or a connection | What the network card is plugged into: a libvirt network, a host bridge, macvtap on a wired host interface, or user-mode networking. The list holds what the host has. |
 
-Each row states what its current value means. A change is stored at once and takes effect at the next full shut off and start of the VM. While a VM runs, a changed row is marked "after restart" and says what runs now and what the next start brings, and a bar offers **Restart to apply**: convirt asks the guest to shut down, as its power button would, waits up to a minute (then offers Force off), and starts it again. **Start**, **Shut down** and **Open** (the VM's screen in virt-viewer or virt-manager) sit beside the VM's name, so the whole round trip happens in one window.
+Each row states what its current value means, from the definition and from what the host has: the microphone row says what the guest's input hears, and a row that does not apply to the chosen sound system or card is shown fixed with the reason. A change is stored at once and takes effect at the next full shut off and start of the VM. Two lines under the rows hold their place: the first confirms the last change in green (red when it failed) with **Undo**, then fades to grey; the second says whether the running VM matches. While a VM runs, a changed row is marked "after restart" and says what runs now and what the next start brings, and the second line offers **Restart to apply**: convirt asks the guest to shut down, as its power button would, waits up to a minute (then offers Force off), and starts it again. **Start**, **Shut down** and **Open** (the VM's screen in virt-viewer or virt-manager) sit beside the VM's name, so the whole round trip happens in one window.
 
 ## Does 3D work?
 
@@ -70,7 +75,7 @@ The same switches work from a shell:
 ./convirt open workstation        # the window, on that VM
 ```
 
-`mic`, `sound`, `accel3d` and `clipboard` take `on` or `off`. `display` takes `sdl`, `gtk` or `spice`. `network` takes `off`, `on` (plug the cable back in), `network:NAME`, `bridge:NAME`, `direct:DEVICE` (macvtap) or `user`; the card keeps its model and MAC address.
+`sound` takes `off`, `on` or a model (`ich9`, `ich6`, `ac97`, `usb`, `virtio`, `es1370`, `sb16`). `mic` takes `off`, `on` (line in) or `micro`. `audio` takes `default` (libvirt's choice for the display), `pipewire`, `pulseaudio`, `spice`, `alsa`, `sdl`, `jack`, `oss`, `dbus` or `none`. `speaker` and `recorder` take `default` or a device name as `pactl list sinks` and `pactl list sources` print it. `latency` takes `default` or milliseconds, `rate` takes `default` or a rate in Hz. `accel3d` and `clipboard` take `on` or `off`. `display` takes `sdl`, `gtk` or `spice`. `network` takes `off`, `on` (plug the cable back in), `network:NAME`, `bridge:NAME`, `direct:DEVICE` (macvtap) or `user`; the card keeps its model and MAC address.
 
 ## Also attached
 
@@ -100,7 +105,9 @@ Every change reads the stored definition of the VM, edits it, saves the previous
 - **Network row.** The row names what each card is plugged into, read from the definition and the libvirt network: a NAT, isolated or routed network, a host bridge, macvtap on a host interface, or user-mode networking. What the guest can reach from there also depends on the host's firewall, so the row does not guess it.
 - **3D on a virt-manager display.** The picture is rendered on the GPU and then copied to the viewer, which can tear. The own-window display avoids the copy.
 - **System VMs.** A VM under the system connection runs as another user and cannot open a window in the desktop session, so its Display switch is fixed.
-- **Sound models.** Only the `ich6` and `ich9` sound cards have a playback-only codec. For other models the Microphone switch is fixed; turning Sound output off removes the card.
+- **Sound card models.** Only the Intel HDA cards (`ich6`, `ich9`) take a codec, so only they have a Microphone choice; AC97, ES1370 and virtio sound always have an input, USB audio and SB16 never do. Changing the model keeps the input where the new card can have one and drops the card's PCI address, which libvirt assigns again. Sound card off removes the card.
+- **Host sound.** A chosen sound system stays when the display changes, with its output, input and latency, except SPICE sound, which only exists with the SPICE display: switching to an own window replaces it with the desktop session's PipeWire or PulseAudio. PipeWire gets the session's runtime folder (`runtimeDir`). A system VM's QEMU runs as another user and reaches the desktop's PipeWire only if it is allowed to open its socket, which the row says. Changing the sound system drops the options that belong to the old one (device names, latency) and keeps the sample rate.
+- **Plays to and Records from.** The lists come from `pactl` on the host, which answers for PipeWire (through pipewire-pulse) and PulseAudio; an output's monitor is not offered as an input.
 
 ## Risk to know about
 

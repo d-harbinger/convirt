@@ -1,6 +1,6 @@
 # CLAUDE.md — convirt
 
-A desktop tool that shows the microphone, sound output, 3D acceleration, display, shared clipboard and network of a libvirt virtual machine as six switches, with save slots, and changes them through `virsh`. MIT-licensed.
+A desktop tool that shows the sound (card, microphone codec, host sound system, output and input device, latency, sample rate), 3D acceleration, display, shared clipboard and network of a libvirt virtual machine as a short list of rows, with save slots, and changes them through `virsh`. MIT-licensed.
 
 ## Project at a glance
 
@@ -20,7 +20,9 @@ A desktop tool that shows the microphone, sound output, 3D acceleration, display
 
 The tests cover `core.py`, the change and undo flow, and the 3D check (with a fake `/proc`, log and module folder) on sample definitions through the `Files` backend, which treats a directory of XML files as the set of VMs and a `NAME.live.xml` beside one as running. Keep `core.py` free of libvirt and GTK imports so it stays testable that way.
 
-Four hidden options exist for checking the rest without a real VM: `--files DIR` swaps libvirt for that directory (its `networks/` folder holds libvirt networks), `--backups DIR` moves the undo store, `--snapshot FILE` draws the window to a PNG and exits, and `--change SWITCH=VALUE` makes one change in the window before the PNG is drawn. `docs/screenshot.png` is made with them, from a running VM after `--change network=network:lab`.
+Four hidden options exist for checking the rest without a real VM: `--files DIR` swaps libvirt for that directory (its `networks/` folder holds libvirt networks, and an `audio.json` holds the host's outputs, inputs and QEMU sound systems), `--backups DIR` moves the undo store, `--snapshot FILE` draws the window's content offscreen at its full natural height, every expander open, to a PNG and exits, and `--change SWITCH=VALUE` makes one change in the window before the PNG is drawn. `docs/screenshot.png` is made with them, from a running VM with a SPICE display after `--change audio=pipewire`.
+
+The tree is shared with the host over virtiofs on the machines where convirt is developed, and the host's menu entry runs this folder. A change that spans several files is built in a worktree (`.worktrees/<slice>`) and merged when its tests pass, so the host never runs a half-made change.
 
 Whether a display choice shows a picture is a property of the host's graphics driver and is verified on the host, by starting a VM.
 

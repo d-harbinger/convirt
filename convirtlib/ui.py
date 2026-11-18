@@ -1,8 +1,9 @@
 """The window: one VM at a time, its switches grouped, every change shown."""
 import gi
 
+gi.require_version("Gdk", "3.0")
 gi.require_version("Gtk", "3.0")
-from gi.repository import GLib, Gtk, Pango  # noqa: E402
+from gi.repository import Gdk, GLib, Gtk, Pango  # noqa: E402
 
 from . import core  # noqa: E402
 
@@ -24,31 +25,61 @@ CSS = b"""
                 padding: 2px 10px; }
 .convirt-pill.running { background-color: #26a269; color: #ffffff; }
 .convirt-pill.off { background-color: alpha(currentColor, 0.15); }
-.convirt-banner { border-radius: 8px; padding: 8px 12px; }
-.convirt-banner.done { background-color: alpha(#26a269, 0.20);
-                       box-shadow: inset 3px 0 0 #26a269; }
-.convirt-banner.failed { background-color: alpha(#c01c28, 0.20);
-                         box-shadow: inset 3px 0 0 #c01c28; }
-.convirt-waiting { border-radius: 8px; padding: 8px 12px;
-                   background-color: alpha(#e5a50a, 0.18);
-                   box-shadow: inset 3px 0 0 #e5a50a; }
+.convirt-status { border-radius: 8px; padding: 6px 12px; min-height: 34px;
+                  background-color: alpha(currentColor, 0.06);
+                  box-shadow: inset 3px 0 0 alpha(currentColor, 0.25);
+                  transition: background-color 600ms ease-out; }
+.convirt-status.done { background-color: alpha(#26a269, 0.20);
+                       box-shadow: inset 3px 0 0 #26a269;
+                       transition: none; }
+.convirt-status.failed { background-color: alpha(#c01c28, 0.20);
+                         box-shadow: inset 3px 0 0 #c01c28;
+                         transition: none; }
+.convirt-status.pending { background-color: alpha(#e5a50a, 0.18);
+                          box-shadow: inset 3px 0 0 #e5a50a; }
 .convirt-dim { opacity: 0.7; }
+.convirt-more { padding: 4px 12px 8px 12px; }
 """
 
+# Each section: its heading, the rows always shown, and the rows under a
+# "More" expander at its foot.
 SECTIONS = (
-    ("Sound", ("mic", "sound")),
-    ("Picture", ("accel3d", "display")),
-    ("Links to the host", ("clipboard", "network")),
+    ("Sound", ("sound", "mic", "audio", "speaker", "recorder"),
+     ("latency", "rate")),
+    ("Picture", ("accel3d", "display"), ()),
+    ("Links to the host", ("clipboard", "network"), ()),
 )
+MORE = {"Sound": "Latency and sample rate"}
 ICONS = {
+    "sound": "audio-card-symbolic",
     "mic": "audio-input-microphone-symbolic",
-    "sound": "audio-volume-high-symbolic",
+    "audio": "computer-symbolic",
+    "speaker": "audio-speakers-symbolic",
+    "recorder": "media-record-symbolic",
+    "latency": "preferences-system-time-symbolic",
+    "rate": "emblem-system-symbolic",
     "accel3d": "applications-graphics-symbolic",
     "display": "video-display-symbolic",
     "clipboard": "edit-paste-symbolic",
     "network": "network-wired-symbolic",
 }
-CHOOSERS = ("display", "network")
+# The rows that are on or off; every other row chooses from a list.
+TOGGLES = ("accel3d", "clipboard")
+# The space the header, the status lines and the buttons take; the rows
+# get the rest of the screen before they scroll.
+CHROME_HEIGHT = 330
+SMALLEST_ROWS_HEIGHT = 360
+
+
+def rows_height():
+    """The tallest the rows grow before they scroll, from the screen."""
+    display = Gdk.Display.get_default()
+    monitor = display.get_primary_monitor() or display.get_monitor(0) \
+        if display else None
+    if monitor is None:
+        return 640
+    height = monitor.get_workarea().height
+    return max(SMALLEST_ROWS_HEIGHT, height - CHROME_HEIGHT)
 BANNER_SECONDS = 7
 # How long a guest gets to power off before Force off is offered.
 SHUTDOWN_SECONDS = 60
@@ -70,7 +101,7 @@ class Window(Gtk.Window):
         # While a restart runs: the seconds left before Force off is offered.
         self.restarting = None
         self.start_after = False
-        self.set_default_size(520, -1)
+        self.set_default_size(680, -1)
         self.set_border_width(18)
 
         provider = Gtk.CssProvider()
@@ -99,36 +130,60 @@ class Window(Gtk.Window):
         header.pack_end(self.running, False, False, 0)
         box.pack_start(header, False, False, 0)
 
-        box.pack_start(self.build_banner(), False, False, 0)
-
-        for heading, names in SECTIONS:
+        # The rows scroll once they outgrow the screen; the header above
+        # and the two status lines below stay where they are, so nothing
+        # moves when a change is confirmed or starts to wait.
+        sections = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        for heading, names, more in SECTIONS:
             label = Gtk.Label(label=heading.upper(), xalign=0)
             label.get_style_context().add_class("convirt-heading")
-            box.pack_start(label, False, False, 0)
+            sections.pack_start(label, False, False, 0)
             rows = Gtk.ListBox()
             rows.set_selection_mode(Gtk.SelectionMode.NONE)
             frame = Gtk.Frame()
             frame.add(rows)
-            box.pack_start(frame, False, False, 0)
+            sections.pack_start(frame, False, False, 0)
             for name in names:
-                rows.add(self.build_row(name))
+                row = Gtk.ListBoxRow()
+                row.set_activatable(False)
+                row.add(self.build_row(name))
+                rows.add(row)
+            if more:
+                inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+                for name in more:
+                    inner.pack_start(self.build_row(name), False, False, 0)
+                expander = Gtk.Expander(label=MORE[heading])
+                expander.get_style_context().add_class("convirt-more")
+                expander.add(inner)
+                row = Gtk.ListBoxRow()
+                row.set_activatable(False)
+                row.add(expander)
+                rows.add(row)
+        self.attached = Gtk.Label(xalign=0)
+        self.attached.set_line_wrap(True)
+        self.attached.get_style_context().add_class("convirt-dim")
+        sections.pack_start(self.attached, False, False, 0)
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_propagate_natural_height(True)
+        scroller.set_max_content_height(rows_height())
+        scroller.add(sections)
+        box.pack_start(scroller, True, True, 0)
+
+        box.pack_start(self.build_banner(), False, False, 0)
 
         self.waiting = Gtk.Box(spacing=10)
-        self.waiting.get_style_context().add_class("convirt-waiting")
+        self.waiting.get_style_context().add_class("convirt-status")
         self.waiting_text = Gtk.Label(xalign=0)
-        self.waiting_text.set_line_wrap(True)
+        self.waiting_text.set_ellipsize(Pango.EllipsizeMode.END)
         self.waiting.pack_start(self.waiting_text, True, True, 0)
         self.apply_button = Gtk.Button(label="Restart to apply")
         self.apply_button.get_style_context().add_class("suggested-action")
         self.apply_button.set_valign(Gtk.Align.CENTER)
+        self.apply_button.set_no_show_all(True)
         self.apply_button.connect("clicked", self.on_apply)
         self.waiting.pack_end(self.apply_button, False, False, 0)
         box.pack_start(self.waiting, False, False, 0)
-
-        self.attached = Gtk.Label(xalign=0)
-        self.attached.set_line_wrap(True)
-        self.attached.get_style_context().add_class("convirt-dim")
-        box.pack_start(self.attached, False, False, 0)
 
         slots = Gtk.Box(spacing=8)
         slots.pack_start(Gtk.Label(label="Slot"), False, False, 0)
@@ -159,35 +214,33 @@ class Window(Gtk.Window):
         self.reload_list()
 
     def build_banner(self):
-        """The line that confirms each change, or says why it failed."""
-        self.banner = Gtk.Revealer()
-        self.banner.set_transition_type(
-            Gtk.RevealerTransitionType.SLIDE_DOWN)
+        """The line that confirms each change, or says why it failed.
+
+        It always holds its place: green or red while news is fresh, then
+        it fades to grey and keeps saying what happened last.
+        """
         line = Gtk.Box(spacing=10)
-        line.get_style_context().add_class("convirt-banner")
-        self.banner_icon = Gtk.Image()
+        line.get_style_context().add_class("convirt-status")
+        self.banner_icon = Gtk.Image.new_from_icon_name(
+            "emblem-default-symbolic", Gtk.IconSize.BUTTON)
         line.pack_start(self.banner_icon, False, False, 0)
-        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
-        self.banner_title = Gtk.Label(xalign=0)
+        self.banner_title = Gtk.Label(xalign=0, label="No changes yet")
         self.banner_title.get_style_context().add_class("convirt-title")
-        self.banner_detail = Gtk.Label(xalign=0)
-        self.banner_detail.set_line_wrap(True)
+        line.pack_start(self.banner_title, False, False, 0)
+        self.banner_detail = Gtk.Label(xalign=0, label=" ")
+        self.banner_detail.set_ellipsize(Pango.EllipsizeMode.END)
         self.banner_detail.get_style_context().add_class("convirt-meaning")
-        text.pack_start(self.banner_title, False, False, 0)
-        text.pack_start(self.banner_detail, False, False, 0)
-        line.pack_start(text, True, True, 0)
+        line.pack_start(self.banner_detail, True, True, 0)
         self.banner_undo = Gtk.Button(label="Undo")
         self.banner_undo.set_valign(Gtk.Align.CENTER)
+        self.banner_undo.set_no_show_all(True)
         self.banner_undo.connect("clicked", self.on_banner_action)
         self.banner_action = self.on_undo
         line.pack_end(self.banner_undo, False, False, 0)
         self.banner_line = line
-        self.banner.add(line)
-        return self.banner
+        return line
 
     def build_row(self, name):
-        row = Gtk.ListBoxRow()
-        row.set_activatable(False)
         line = Gtk.Box(spacing=12)
         line.get_style_context().add_class("convirt-row")
         icon = Gtk.Image.new_from_icon_name(ICONS[name], Gtk.IconSize.BUTTON)
@@ -217,20 +270,24 @@ class Window(Gtk.Window):
             line.pack_end(details, False, False, 0)
             self.details = details
 
-        if name in CHOOSERS:
-            control = Gtk.ComboBoxText()
-            control.connect("changed", self.on_choose, name)
-        else:
+        if name in TOGGLES:
             control = Gtk.Switch()
             control.connect("notify::active", self.on_switch, name)
+        else:
+            control = Gtk.ComboBoxText()
+            # Long host device names would widen the window; they are cut
+            # in the list and said in full on the row's line.
+            cell = control.get_cells()[0]
+            cell.set_property("ellipsize", Pango.EllipsizeMode.END)
+            cell.set_property("max-width-chars", 26)
+            control.connect("changed", self.on_choose, name)
         control.set_valign(Gtk.Align.CENTER)
         line.pack_end(control, False, False, 0)
         self.controls[name] = control
         self.meanings[name] = meaning
         self.badges[name] = badge
         self.lines[name] = line
-        row.add(line)
-        return row
+        return line
 
     # ------------------------------------------------------------ feedback
 
@@ -255,17 +312,29 @@ class Window(Gtk.Window):
             "dialog-error-symbolic" if failed else "emblem-ok-symbolic",
             Gtk.IconSize.BUTTON)
         self.banner_title.set_text(title)
-        self.banner_detail.set_text(detail)
-        self.banner_detail.set_visible(bool(detail))
+        self.banner_title.set_tooltip_text(title)
+        self.banner_detail.set_text(detail or " ")
+        self.banner_detail.set_tooltip_text(detail or None)
         self.banner_undo.set_visible(undo)
-        self.banner.set_reveal_child(True)
         if self.banner_timer:
             GLib.source_remove(self.banner_timer)
         self.banner_timer = GLib.timeout_add_seconds(
             BANNER_SECONDS, self.hide_banner)
 
-    def hide_banner(self):
-        self.banner.set_reveal_child(False)
+    def hide_banner(self, reset=False):
+        """Let the news fade: the line goes grey and keeps its words; a
+        reset, on picking another VM, clears them too."""
+        style = self.banner_line.get_style_context()
+        style.remove_class("done")
+        style.remove_class("failed")
+        if reset:
+            self.banner_icon.set_from_icon_name(
+                "emblem-default-symbolic", Gtk.IconSize.BUTTON)
+            self.banner_title.set_text("No changes yet")
+            self.banner_detail.set_text(" ")
+            self.banner_undo.set_visible(False)
+        if self.banner_timer and reset:
+            GLib.source_remove(self.banner_timer)
         self.banner_timer = None
         return False
 
@@ -296,7 +365,8 @@ class Window(Gtk.Window):
         if not self.vms:
             self.vm = None
             self.set_sensitive_rows(False)
-            self.waiting.hide()
+            self.waiting_text.set_text("No VM to show")
+            self.apply_button.set_visible(False)
             return
         labels = [vm.label for vm in self.vms]
         index = labels.index(keep) if keep in labels else 0
@@ -323,10 +393,7 @@ class Window(Gtk.Window):
             live = self.manager.live_values(self.vm)
             attached = core.exposures(self.manager.stored(self.vm))
             slots = self.manager.slots(self.vm)
-            choices = {
-                "display": list(core.DISPLAY_LABELS.items()),
-                "network": self.manager.network_choices(self.vm),
-            }
+            choices = self.manager.choices(self.vm)
         except RuntimeError as error:
             self.set_sensitive_rows(False)
             self.announce("Cannot read this VM", str(error), failed=True)
@@ -349,7 +416,7 @@ class Window(Gtk.Window):
         for name in core.SWITCHES:
             entry = state[name]
             control = self.controls[name]
-            if name in CHOOSERS:
+            if name not in TOGGLES:
                 control.remove_all()
                 for value, label in choices[name]:
                     control.append(value, label)
@@ -365,7 +432,8 @@ class Window(Gtk.Window):
                 meaning = self.verdict_text(meaning)
             if waiting and live:
                 labels = dict(choices.get(name, ()))
-                running = labels.get(live[name], live[name])
+                running = labels.get(live[name]) or core.value_label(
+                    name, live[name])
                 meaning = "now: %s → next start: %s" % (running, meaning)
             self.meanings[name].set_text(meaning)
             self.meanings[name].set_tooltip_text(meaning)
@@ -392,16 +460,23 @@ class Window(Gtk.Window):
             "An own-window display opens when the VM starts" if own
             else "Show the VM's screen in virt-manager")
         self.undo.set_sensitive(self.manager.can_undo(self.vm))
+        style = self.waiting.get_style_context()
         if pending:
-            self.waiting_text.set_text(
-                "%s for a full shut down and start: %s" % (
-                    "1 change waits" if len(pending) == 1
-                    else "%d changes wait" % len(pending),
-                    ", ".join(core.TITLES[n] for n in pending)))
+            text = "%s for a full shut down and start: %s" % (
+                "1 change waits" if len(pending) == 1
+                else "%d changes wait" % len(pending),
+                ", ".join(core.TITLES[n] for n in pending))
+            style.add_class("pending")
             self.apply_button.set_sensitive(not busy)
-            self.waiting.show_all()
+        elif self.vm.running:
+            text = "The running VM matches these settings"
+            style.remove_class("pending")
         else:
-            self.waiting.hide()
+            text = "Shut off: every setting applies at the next start"
+            style.remove_class("pending")
+        self.waiting_text.set_text(text)
+        self.waiting_text.set_tooltip_text(text)
+        self.apply_button.set_visible(bool(pending))
 
     def verdict_text(self, meaning):
         """The 3D row's line: the setting, then what the check found."""
@@ -424,7 +499,7 @@ class Window(Gtk.Window):
             return
         index = picker.get_active()
         self.vm = self.vms[index] if index >= 0 else None
-        self.hide_banner()
+        self.hide_banner(reset=True)
         self.reload()
 
     def on_switch(self, control, _param, name):
@@ -449,9 +524,9 @@ class Window(Gtk.Window):
         self.reload()
         self.flash(name)
         if self.vm.running:
-            detail = "Saved. Applies when the VM shuts down and starts again."
+            detail = "Saved; applies after a full shut down and start"
         else:
-            detail = "Saved. Applies when the VM starts."
+            detail = "Saved; applies at the next start"
         self.announce(title, detail, undo=True)
 
     # ---------------------------------------------------------- lifecycle
@@ -647,36 +722,59 @@ class Window(Gtk.Window):
 def snapshot(window, path, change=None):
     """Draw the window into a PNG file, then quit. Used to check the look.
 
-    change is an optional (switch, value) made first, so the picture shows
-    how the window answers a change.
+    The content is drawn offscreen at its full natural size, with every
+    "More" expander open, so the picture holds every row whatever size a
+    compositor would give the window. change is an optional (switch,
+    value) made first, so the picture shows how the window answers it.
     """
-    import cairo
+    child = window.get_child()
+    window.remove(child)
+    offscreen = Gtk.OffscreenWindow()
+    frame = Gtk.Box()
+    frame.set_border_width(window.get_border_width())
+    frame.pack_start(child, True, True, 0)
+    offscreen.add(frame)
+    offscreen.set_size_request(window.get_default_size()[0], -1)
+
+    def open_all(widget):
+        if isinstance(widget, Gtk.Expander):
+            widget.set_expanded(True)
+        if isinstance(widget, Gtk.ScrolledWindow):
+            # An offscreen window sizes a scroller by its minimum.
+            widget.set_max_content_height(-1)
+            widget.set_min_content_height(
+                widget.get_child().get_preferred_height()[1])
+        if isinstance(widget, Gtk.Container):
+            widget.forall(open_all)
+
+    offscreen.show_all()
+    window.hide()
 
     def act():
         if change:
             name, value = change
             control = window.controls[name]
-            if name in CHOOSERS:
+            if name not in TOGGLES:
                 control.set_active_id(value)
             else:
                 control.set_active(value == "on")
         return False
 
+    def expand():
+        open_all(frame)
+        return False
+
     def draw():
-        # A tiling compositor may give the window more height than it
-        # asks for; draw only what the content needs.
-        width = window.get_allocated_width()
-        border = window.get_border_width()
-        natural = window.get_child().get_preferred_height()[1] + 2 * border
-        height = min(window.get_allocated_height(), natural)
-        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
-        window.draw(cairo.Context(surface))
-        surface.write_to_png(path)
+        offscreen.get_pixbuf().savev(path, "png", [], [])
         Gtk.main_quit()
         return False
 
+    # Open the expanders, let them take their size, then size the
+    # scroller to the rows, then draw.
     GLib.timeout_add(300, act)
-    GLib.timeout_add(1200, draw)
+    GLib.timeout_add(600, expand)
+    GLib.timeout_add(1000, expand)
+    GLib.timeout_add(1500, draw)
 
 
 def run(manager, snapshot_path=None, change=None, initial=None):

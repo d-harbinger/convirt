@@ -14,10 +14,21 @@
     convirt save VM SLOT          save the current config under a name
     convirt restore VM SLOT       put a saved config back
 
-Switches: mic, sound, accel3d, clipboard take on or off; display takes sdl,
-gtk or spice; network takes off, on, network:NAME, bridge:NAME, direct:DEVICE
-(macvtap) or user. A change is stored at once and takes effect at the next
-full shut off and start of the VM.
+Switches:
+  sound      off, on, or a card: ich9 ich6 ac97 usb virtio es1370 sb16
+  mic        off, on (line in, hda-duplex) or micro (hda-micro); Intel HDA
+  audio      default, pipewire, pulseaudio, spice, alsa, sdl, jack, oss,
+             dbus or none: the host sound system
+  speaker    default or a PipeWire/PulseAudio output name (pactl list sinks)
+  recorder   default or an input name (pactl list sources)
+  latency    default or milliseconds
+  rate       default or a sample rate in Hz, both ways
+  accel3d, clipboard   on or off
+  display    sdl, gtk or spice
+  network    off, on, network:NAME, bridge:NAME, direct:DEVICE (macvtap)
+             or user
+A change is stored at once and takes effect at the next full shut off and
+start of the VM.
 """
 import sys
 
@@ -76,7 +87,7 @@ def main(argv=None):
             vm = manager.find(args[1])
             state = manager.state(vm)
             for name in core.SWITCHES:
-                print("%-16s %-6s %s" % (core.TITLES[name],
+                print("%-16s %-16s %s" % (core.TITLES[name],
                                          state[name]["value"],
                                          state[name]["meaning"]))
             attached = core.exposures(manager.stored(vm))

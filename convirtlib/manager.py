@@ -4,6 +4,7 @@ Two backends share one interface: Libvirt runs virsh, and Files treats a
 directory of XML files as the set of VMs so the rest of the program can
 be tested and drawn without libvirt.
 """
+import json
 import os
 import shutil
 import subprocess
@@ -102,6 +103,51 @@ class Libvirt:
     def host_interfaces(self, vm):
         return host_interfaces()
 
+    def audio_devices(self, vm):
+        return audio_devices()
+
+    def audio_types(self, vm):
+        return audio_types()
+
+
+def audio_devices(run=subprocess.run):
+    """This desktop's sound outputs and inputs, as {"sinks": [(name,
+    label)], "sources": [...]}, read from PipeWire or PulseAudio through
+    pactl; None when neither answers. Monitors of outputs are not inputs."""
+    found = {}
+    for kind in ("sinks", "sources"):
+        try:
+            result = run(["pactl", "--format=json", "list", kind],
+                         capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if result.returncode != 0:
+            return None
+        try:
+            entries = json.loads(result.stdout)
+        except ValueError:
+            return None
+        devices = []
+        for entry in entries:
+            properties = entry.get("properties") or {}
+            if properties.get("device.class") == "monitor":
+                continue
+            name = entry.get("name")
+            if name:
+                devices.append((name, entry.get("description") or name))
+        found[kind] = devices
+    return found
+
+
+def audio_types(dirs=check.MODULE_DIRS):
+    """The host sound systems this QEMU can use, or None when QEMU is not
+    split into modules and so has whatever it was built with."""
+    directory = check.module_dir(dirs)
+    if directory is None:
+        return None
+    return {kind for kind, module in core.AUDIO_MODULES.items()
+            if not check.missing_modules((module,), directory)}
+
 
 def host_interfaces(sysfs="/sys/class/net"):
     """This host's bridges, and its wired cards that macvtap can sit on."""
@@ -160,13 +206,33 @@ class Files:
     """Each NAME.xml in a directory is a VM; NAME.live.xml means running.
 
     NAME.xml under networks/ is a libvirt network. render is the list of
-    render nodes to report, or None to leave the host's GPU unsaid.
+    render nodes to report, or None to leave the host's GPU unsaid. An
+    audio.json beside the VMs holds the host's sound: "sinks" and "sources"
+    as [name, label] pairs and "types", the sound systems QEMU has.
     """
 
     def __init__(self, directory, render=None, interfaces=None):
         self.directory = directory
         self.render = render
         self.interfaces = interfaces or {"bridges": [], "wired": []}
+
+    def _audio(self):
+        path = os.path.join(self.directory, "audio.json")
+        if not os.path.exists(path):
+            return {}
+        with open(path) as handle:
+            return json.load(handle)
+
+    def audio_devices(self, vm):
+        audio = self._audio()
+        if "sinks" not in audio:
+            return None
+        return {kind: [tuple(d) for d in audio.get(kind, [])]
+                for kind in ("sinks", "sources")}
+
+    def audio_types(self, vm):
+        types = self._audio().get("types")
+        return None if types is None else set(types)
 
     def network_xml(self, vm, name):
         path = os.path.join(self.directory, "networks", name + ".xml")
@@ -265,11 +331,26 @@ class Manager:
             mode = forward_mode(self.backend.network_xml(vm, name))
             if mode:
                 networks[name] = mode
-        facts = {"networks": networks}
+        facts = {"networks": networks, "system": not vm.session}
         render = self.backend.render_nodes(vm)
         if render is not None:
             facts["render"] = render
+        devices = self.backend.audio_devices(vm)
+        if devices is not None:
+            facts["sinks"] = devices["sinks"]
+            facts["sources"] = devices["sources"]
+        types = self.backend.audio_types(vm)
+        if types is not None:
+            facts["audio_types"] = types
         return facts
+
+    def choices(self, vm):
+        """{switch: [(value, label)]} for every switch that is a list."""
+        root = self.stored(vm)
+        choices = core.sound_choices(root, self.host_facts(vm, root))
+        choices["display"] = list(core.DISPLAY_LABELS.items())
+        choices["network"] = self.network_choices(vm)
+        return choices
 
     def network_choices(self, vm):
         """[(value, label)] for every connection this host offers the VM."""
@@ -360,13 +441,27 @@ class Manager:
             return []
         live = core.values(core.parse(self.backend.xml(vm, live=True)))
         stored = core.values(self.stored(vm))
-        return [name for name in core.SWITCHES if live[name] != stored[name]]
+        pending = [name for name in core.SWITCHES
+                   if live[name] != stored[name]]
+        if stored["sound"] == "off":
+            # Taking the card out is one change; the rows that hang off
+            # the card go with it.
+            pending = [name for name in pending
+                       if name == "sound" or name not in core.SOUND_ROWS]
+        return pending
 
     def change(self, vm, switch, value, facts=None):
         """Apply one switch. Return True if the definition changed."""
         if switch == "display" and value in core.OWN_WINDOW \
                 and not vm.session:
             raise RuntimeError("a system VM cannot use its own window")
+        if switch == "audio" and value in core.AUDIO_MODULES:
+            types = self.backend.audio_types(vm)
+            if types is not None and value not in types:
+                raise RuntimeError(
+                    "QEMU's %s module is not installed (on Arch and "
+                    "Fedora, the package qemu-%s)" % (
+                        core.AUDIO_MODULES[value], core.AUDIO_MODULES[value]))
         original = self.backend.xml(vm)
         root = core.parse(original)
         if core.same_value(switch, core.values(root)[switch], value):

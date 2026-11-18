@@ -3,13 +3,20 @@
 Everything here works on an ElementTree of the domain XML and touches
 neither libvirt nor the screen, so it can be tested on plain files.
 
-The five switches:
+The switches:
 
-    mic      on | off          the guest has a recording device
-    sound    on | off          the guest has a sound card
-    accel3d  on | off          the guest renders on the host GPU (virgl)
-    display  sdl | gtk | spice own window (two kinds) | virt-manager
-    network  on | off          virtual network cable plugged in
+    sound     off | MODEL       the sound card, by model (on: ich9)
+    mic       off | on | micro  the card's input: none, line in (QEMU's
+                                default hda-duplex) or a microphone
+    audio     default | TYPE    the host sound system QEMU plays into
+    speaker   default | NAME    the host output it plays to
+    recorder  default | NAME    the host input it records from
+    latency   default | MS      the latency asked of PipeWire or Pulse
+    rate      default | HZ      a fixed sample rate, both ways
+    accel3d   on | off          the guest renders on the host GPU (virgl)
+    display   sdl | gtk | spice own window (two kinds) | virt-manager
+    clipboard on | off          host and guest share the clipboard
+    network   off | on | KEY    what the network card is plugged into
 
 The two own-window displays differ in how they take the pointer. The SDL
 window grabs it whenever it is inside the window and lets go at the edge.
@@ -24,10 +31,18 @@ ET.register_namespace("qemu", QEMU_NS)
 ET.register_namespace(
     "libosinfo", "http://libosinfo.org/xmlns/libvirt/domain/1.0")
 
-SWITCHES = ("mic", "sound", "accel3d", "display", "clipboard", "network")
+SWITCHES = ("sound", "mic", "audio", "speaker", "recorder", "latency",
+            "rate", "accel3d", "display", "clipboard", "network")
+# The card first, then the rows that only mean something with a card.
+SOUND_ROWS = SWITCHES[:7]
 TITLES = {
+    "sound": "Sound card",
     "mic": "Microphone",
-    "sound": "Sound output",
+    "audio": "Host sound",
+    "speaker": "Plays to",
+    "recorder": "Records from",
+    "latency": "Latency",
+    "rate": "Sample rate",
     "accel3d": "3D acceleration",
     "display": "Display",
     "clipboard": "Shared clipboard",
@@ -43,6 +58,62 @@ OWN_WINDOW = ("sdl", "gtk")
 
 # Sound models whose codec can be swapped for a playback-only one.
 ICH = ("ich6", "ich9")
+# The sound cards QEMU emulates, as the Sound card switch offers them, and
+# what each one gives the guest. Which cards record was read from QEMU
+# itself: USB audio and SB16 only open an output voice.
+SOUND_MODELS = (
+    ("ich9", "Intel HDA (ICH9)"),
+    ("ich6", "Intel HDA (ICH6)"),
+    ("ac97", "AC97"),
+    ("usb", "USB audio"),
+    ("virtio", "virtio sound"),
+    ("es1370", "Ensoniq ES1370"),
+    ("sb16", "Sound Blaster 16"),
+)
+SOUND_NOTES = {
+    "ich9": "plays and records; the usual choice",
+    "ich6": "plays and records; the older Intel HDA",
+    "ac97": "plays and records; for older guests",
+    "usb": "plays only; a USB sound device",
+    "virtio": "plays and records; Linux 5.13+, QEMU 8.2+",
+    "es1370": "plays and records; for older guests",
+    "sb16": "plays only; for DOS-era guests",
+    "pcspk": "PC speaker beeps only",
+}
+RECORDING_MODELS = ICH + ("ac97", "es1370", "virtio")
+MIC_LABELS = (
+    ("off", "None (hda-output)"),
+    ("micro", "Microphone (hda-micro)"),
+    ("on", "Line in (hda-duplex)"),
+)
+# The host sound systems libvirt can hand QEMU's sound to, and the QEMU
+# module each one needs where QEMU is split into modules.
+AUDIO_TYPES = (
+    ("pipewire", "PipeWire"),
+    ("pulseaudio", "PulseAudio"),
+    ("spice", "SPICE, to the viewer"),
+    ("alsa", "ALSA"),
+    ("sdl", "SDL"),
+    ("jack", "JACK"),
+    ("oss", "OSS"),
+    ("dbus", "D-Bus"),
+    ("none", "None, silent"),
+)
+AUDIO_MODULES = {
+    "pipewire": "audio-pipewire", "pulseaudio": "audio-pa",
+    "spice": "audio-spice", "alsa": "audio-alsa", "sdl": "audio-sdl",
+    "jack": "audio-jack", "oss": "audio-oss", "dbus": "audio-dbus",
+}
+# Sound systems that take a host output and input by name and a latency.
+NAMED_AUDIO = ("pipewire", "pulseaudio")
+LATENCIES = ("10", "20", "50", "100", "200")
+RATES = (("44100", "44.1 kHz"), ("48000", "48 kHz"))
+# Attributes that belong to one sound system and go when it changes.
+_AUDIO_OWN = ("runtimeDir", "serverName", "tryMMap", "exclusive",
+              "dspPolicy")
+_STREAM_OWN = ("name", "streamName", "latency", "dev", "bufferCount",
+               "tryPoll", "serverName", "clientName", "connectPorts",
+               "exactName")
 GL_DEVICE = {"virtio-vga": "virtio-vga-gl", "virtio-gpu": "virtio-gpu-gl"}
 PLAIN_DEVICE = {gl: plain for plain, gl in GL_DEVICE.items()}
 # Variables handed to QEMU so its window can reach the desktop session.
@@ -180,46 +251,239 @@ def _accel_requested(root):
     return device is None or device in PLAIN_DEVICE
 
 
-def _sound_has_input(sound):
+def _sound_card(root):
+    """The card the sound switches change: the first that is not a PC
+    speaker, or None."""
+    cards = [s for s in _devices(root).findall("sound")
+             if s.get("model") != "pcspk"]
+    return cards[0] if cards else None
+
+
+def _mic_value(sound):
+    """off, on (a line in) or micro (a microphone) for one card."""
     model = sound.get("model")
-    if model == "pcspk":
-        return False
     if model in ICH:
-        codecs = sound.findall("codec")
-        return not codecs or any(
-            c.get("type") in ("duplex", "micro") for c in codecs)
-    return True
+        types = [c.get("type") for c in sound.findall("codec")]
+        if not types:
+            return "on"  # QEMU attaches hda-duplex
+        if "micro" in types:
+            return "micro"
+        return "on" if "duplex" in types else "off"
+    if model == "virtio":
+        return "on" if sound.get("streams", "2") != "1" else "off"
+    return "on" if model in RECORDING_MODELS else "off"
+
+
+def _audio_backend(root):
+    """The audio element the sound card plays into, or None when libvirt
+    picks one itself."""
+    audios = _devices(root).findall("audio")
+    card = _sound_card(root)
+    link = card.find("audio") if card is not None else None
+    if link is not None:
+        for audio in audios:
+            if audio.get("id") == link.get("id"):
+                return audio
+    return audios[0] if audios else None
+
+
+def _default_audio(root):
+    """What libvirt picks with no audio element: SPICE for a SPICE display,
+    otherwise nothing."""
+    return "spice" if display_kind(root) == "spice" else "none"
+
+
+def _stream(audio, direction):
+    """The input or output element of an audio backend, or None."""
+    return None if audio is None else audio.find(direction)
+
+
+def _device_label(name, devices):
+    for key, label in devices or ():
+        if key == name:
+            return label
+    return name
+
+
+def _sound_state(root, host, state):
+    card = _sound_card(root)
+    cards = [s for s in _devices(root).findall("sound")
+             if s.get("model") != "pcspk"]
+    if card is None:
+        for name in SOUND_ROWS:
+            state[name] = ("off" if name in ("sound", "mic") else "default",
+                           name == "sound", "no sound card")
+        return
+    model = card.get("model")
+    meaning = SOUND_NOTES.get(model, "model %s" % model)
+    if len(cards) > 1:
+        meaning += "; %d cards, the first one switches" % len(cards)
+    state["sound"] = (model, True, meaning)
+
+    audio = _audio_backend(root)
+    kind = audio.get("type") if audio is not None else None
+    effective = kind or _default_audio(root)
+    system = host.get("system", False)
+    if kind is None:
+        audio_meaning = "libvirt's choice for this display: %s" % effective
+    elif kind == "pipewire":
+        audio_meaning = "this desktop's PipeWire"
+        if system:
+            audio_meaning += ("; QEMU runs as the system's user and needs "
+                              "leave to open this PipeWire")
+    elif kind == "pulseaudio":
+        audio_meaning = "this desktop's PulseAudio (or pipewire-pulse)"
+    elif kind == "spice":
+        audio_meaning = "sent to the viewer; silent while none is open"
+        if display_kind(root) != "spice":
+            audio_meaning = "SPICE, but this display is not SPICE; silent"
+    elif kind == "none":
+        audio_meaning = "goes nowhere; the guest is silent"
+    elif kind == "alsa":
+        audio_meaning = "straight to an ALSA device, past the desktop mixer"
+    else:
+        audio_meaning = "through %s" % dict(AUDIO_TYPES).get(kind, kind)
+    available = host.get("audio_types")
+    if kind and available is not None and kind != "none" \
+            and kind not in available:
+        audio_meaning = "QEMU's %s module is not installed; silent" % (
+            AUDIO_MODULES.get(kind, kind))
+    state["audio"] = (kind or "default", True, audio_meaning)
+
+    named = effective in NAMED_AUDIO
+    output = _stream(audio, "output")
+    sink = output.get("name") if output is not None else None
+    if named:
+        speaker = ("the host's default output" if not sink else
+                   _device_label(sink, host.get("sinks")))
+    elif effective == "spice":
+        speaker = "the viewer's speakers"
+    elif effective == "none":
+        speaker = "nothing"
+    else:
+        speaker = "chosen by %s" % dict(AUDIO_TYPES).get(effective, effective)
+    state["speaker"] = (sink or "default", named, speaker)
+
+    mic = _mic_value(card)
+    source_element = _stream(audio, "input")
+    source = source_element.get("name") \
+        if source_element is not None else None
+    if named:
+        hears = ("the host's default input" if not source else
+                 _device_label(source, host.get("sources")))
+    elif effective == "spice":
+        hears = "the viewer's microphone, if it sends one"
+    elif effective == "none":
+        hears = "silence"
+    else:
+        hears = "what %s records" % dict(AUDIO_TYPES).get(
+            effective, effective)
+    if mic == "off":
+        mic_meaning = ("plays only; the guest has no input" if model in ICH
+                       else "%s has no input" % dict(SOUND_MODELS).get(
+                           model, model))
+    else:
+        device = {"micro": "a microphone", "on": "a line in"}[mic] \
+            if model in ICH else "an input"
+        mic_meaning = "%s; hears %s" % (device, hears)
+    state["mic"] = (mic, model in ICH, mic_meaning)
+    state["recorder"] = (source or "default", named and mic != "off",
+                         hears if mic != "off" else "no input on the card")
+
+    latency = output.get("latency") if output is not None else None
+    if latency and latency.isdigit():
+        value = str(int(latency) // 1000)
+        latency_meaning = ("%s ms; lower answers sooner, too low crackles"
+                           % value)
+    else:
+        value = "default"
+        latency_meaning = "the sound system's default"
+    if not named:
+        latency_meaning = "only PipeWire and PulseAudio take a latency"
+    state["latency"] = (value, named, latency_meaning)
+
+    settings = output.find("settings") if output is not None else None
+    if output is not None and output.get("fixedSettings") == "yes" \
+            and settings is not None and settings.get("frequency"):
+        rate = settings.get("frequency")
+        rate_meaning = "fixed at %s Hz both ways" % rate
+    else:
+        rate = "default"
+        rate_meaning = "QEMU converts to the rate the guest picks"
+    state["rate"] = (rate, True, rate_meaning)
+
+
+def sound_choices(root, host=None):
+    """[(value, label)] for each sound chooser, from what the host has."""
+    host = host or {}
+    available = host.get("audio_types")
+    choices = {"sound": [("off", "Off")] + list(SOUND_MODELS)}
+    card = _sound_card(root)
+    if card is None:
+        for name in SOUND_ROWS[1:]:
+            value = "off" if name == "mic" else "default"
+            choices[name] = [(value, "No card")]
+        return choices
+    model = card.get("model")
+    if model in ICH:
+        choices["mic"] = list(MIC_LABELS)
+    else:
+        value = _mic_value(card)
+        choices["mic"] = [(value, "Fixed: input" if value == "on"
+                           else "Fixed: none")]
+    audio = []
+    if _audio_backend(root) is None:
+        audio.append(("default", "libvirt's choice"))
+    for kind, label in AUDIO_TYPES:
+        if kind == "spice" and display_kind(root) != "spice":
+            continue
+        if available is not None and kind != "none" \
+                and kind not in available:
+            label += " (not installed)"
+        audio.append((kind, label))
+    choices["audio"] = audio
+    choices["speaker"] = [("default", "Host default output")] + list(
+        host.get("sinks") or ())
+    choices["recorder"] = [("default", "Host default input")] + list(
+        host.get("sources") or ())
+    choices["latency"] = [("default", "Default")] + [
+        (ms, "%s ms" % ms) for ms in LATENCIES]
+    choices["rate"] = [("default", "Guest's choice")] + list(RATES)
+    return choices
+
+
+def value_label(switch, value):
+    """A sound switch's value as the window names it, without the host;
+    used for what a running VM has, which may not be on today's lists."""
+    tables = {
+        "sound": [("off", "Off")] + list(SOUND_MODELS),
+        "mic": list(MIC_LABELS),
+        "audio": [("default", "libvirt's choice")] + list(AUDIO_TYPES),
+        "speaker": [("default", "Host default output")],
+        "recorder": [("default", "Host default input")],
+        "latency": [("default", "Default")],
+        "rate": [("default", "Guest's choice")] + list(RATES),
+    }
+    label = dict(tables.get(switch, ())).get(value)
+    if label is None and switch == "latency":
+        return "%s ms" % value
+    return label or value
 
 
 def read_state(root, host=None):
     """Return {switch: {value, enabled, meaning}} for one definition.
 
     host holds what only the machine running the VM can say, gathered by
-    the manager: "networks", the forward mode of each libvirt network, and
-    "render", the GPU render nodes as dicts of node, driver and usable.
-    Missing keys leave those parts of the meanings unsaid.
+    the manager: "networks", the forward mode of each libvirt network;
+    "render", the GPU render nodes as dicts of node, driver and usable;
+    "sinks" and "sources", the host's outputs and inputs as (name, label);
+    "audio_types", the sound systems QEMU has modules for; and "system",
+    true for a VM under the system connection. Missing keys leave those
+    parts of the meanings unsaid.
     """
     host = host or {}
     state = {}
-    sounds = _devices(root).findall("sound")
-
-    mic_on = any(_sound_has_input(s) for s in sounds)
-    fixed = [s.get("model") for s in sounds
-             if s.get("model") not in ICH + ("pcspk",)]
-    if not sounds:
-        mic = ("off", False, "no sound card")
-    elif fixed:
-        mic = ("on", False, "sound model %s cannot drop its input" % fixed[0])
-    elif mic_on:
-        mic = ("on", True, "guest can record from host microphone")
-    else:
-        mic = ("off", True, "guest has no recording device")
-    state["mic"] = mic
-
-    if sounds:
-        state["sound"] = ("on", True, "plays through host")
-    else:
-        state["sound"] = ("off", True, "no sound card")
+    _sound_state(root, host, state)
 
     kind = display_kind(root)
     render = host.get("render")
@@ -302,6 +566,8 @@ def connection_key(interface):
 def same_value(switch, current, wanted):
     """Whether a switch already holds a wanted value."""
     if switch == "network" and wanted == "on":
+        return current != "off"
+    if switch == "sound" and wanted == "on":
         return current != "off"
     return current == wanted
 
@@ -406,9 +672,19 @@ def _pretty(element):
 def apply(root, switch, value, facts=None):
     """Change one switch in place. Raise ValueError if it cannot be done."""
     if switch == "mic":
-        _set_mic(root, _on(value))
+        _set_mic(root, value)
     elif switch == "sound":
-        _set_sound(root, _on(value), facts)
+        _set_sound(root, value, facts)
+    elif switch == "audio":
+        _set_audio(root, value, facts)
+    elif switch == "speaker":
+        _set_device(root, "output", value)
+    elif switch == "recorder":
+        _set_device(root, "input", value)
+    elif switch == "latency":
+        _set_latency(root, value)
+    elif switch == "rate":
+        _set_rate(root, value)
     elif switch == "accel3d":
         _set_accel(root, _on(value))
     elif switch == "display":
@@ -430,37 +706,185 @@ def _on(value):
     return value == "on"
 
 
-def _set_mic(root, on):
-    sounds = _devices(root).findall("sound")
-    if not sounds:
-        raise ValueError("no sound card; turn sound output on first")
-    for sound in sounds:
-        model = sound.get("model")
-        if model == "pcspk":
-            continue
-        if model not in ICH:
-            raise ValueError(
-                "sound model %s cannot drop its input" % model)
-        for codec in sound.findall("codec"):
-            sound.remove(codec)
-        if not on:
-            ET.SubElement(sound, "codec", {"type": "output"})
+def _set_codec(sound, value):
+    """Give an Intel HDA card the codec for off, on (line in) or micro."""
+    for codec in sound.findall("codec"):
+        sound.remove(codec)
+    if value in ("off", "micro"):
+        codec = ET.Element("codec", {"type": "output" if value == "off"
+                                     else "micro"})
+        sound.insert(0, codec)
 
 
-def _set_sound(root, on, facts):
+def _set_mic(root, value):
+    if value not in ("off", "on", "micro"):
+        raise ValueError("mic takes off, on (line in) or micro")
+    card = _sound_card(root)
+    if card is None:
+        raise ValueError("no sound card; choose one first")
+    if card.get("model") not in ICH:
+        raise ValueError("the %s card's input is fixed" % dict(
+            SOUND_MODELS).get(card.get("model"), card.get("model")))
+    _set_codec(card, value)
+
+
+def _set_sound(root, value, facts):
     devices = _devices(root)
     sounds = devices.findall("sound")
-    if not on:
+    if value == "off":
         for sound in sounds:
             devices.remove(sound)
         return
-    if sounds:
+    card = _sound_card(root)
+    if value == "on":
+        if card is not None:
+            return
+        value = "ich9"
+    if value not in dict(SOUND_MODELS):
+        raise ValueError("sound takes off, on or a model: %s" % ", ".join(
+            m for m, _ in SOUND_MODELS))
+    if card is None:
+        # A new card starts playback-only: the microphone is its own switch.
+        card = ET.SubElement(devices, "sound", {"model": value})
+        if value in ICH:
+            _set_codec(card, "off")
+        if _audio_backend(root) is None:
+            _ensure_audio(root, display_kind(root), facts)
         return
-    # A new card starts playback-only: the microphone is its own switch.
-    sound = ET.SubElement(devices, "sound", {"model": "ich9"})
-    ET.SubElement(sound, "codec", {"type": "output"})
-    if devices.find("audio") is None:
-        _ensure_audio(root, display_kind(root), facts)
+    had_input = _mic_value(card) != "off"
+    card.set("model", value)
+    # A PCI address does not fit a USB card, and the reverse; libvirt
+    # gives the card a new one.
+    for child in list(card):
+        if child.tag == "address" or (child.tag == "codec"
+                                      and value not in ICH):
+            card.remove(child)
+    if value != "virtio":
+        card.attrib.pop("streams", None)
+    if value != "usb":
+        card.attrib.pop("multichannel", None)
+    if value in ICH and not card.findall("codec"):
+        _set_codec(card, "on" if had_input else "off")
+
+
+def _backend_for_change(root, what):
+    audio = _audio_backend(root)
+    if _sound_card(root) is None:
+        raise ValueError("no sound card; choose one first")
+    kind = audio.get("type") if audio is not None else None
+    if kind not in NAMED_AUDIO:
+        raise ValueError("%s needs PipeWire or PulseAudio as host sound"
+                         % what)
+    return audio
+
+
+def _stream_element(audio, direction):
+    element = audio.find(direction)
+    if element is None:
+        element = ET.Element(direction)
+        # input comes before output in libvirt's own order
+        position = 0 if direction == "input" else len(audio)
+        audio.insert(position, element)
+    return element
+
+
+def _tidy_stream(audio, direction):
+    element = audio.find(direction)
+    if element is not None and not element.attrib and len(element) == 0:
+        audio.remove(element)
+
+
+def _set_audio(root, value, facts):
+    devices = _devices(root)
+    if _sound_card(root) is None:
+        raise ValueError("no sound card; choose one first")
+    if value == "default":
+        for audio in devices.findall("audio"):
+            devices.remove(audio)
+        for sound in devices.findall("sound"):
+            for link in sound.findall("audio"):
+                sound.remove(link)
+        return
+    if value not in dict(AUDIO_TYPES):
+        raise ValueError("audio takes default or one of: %s" % ", ".join(
+            kind for kind, _ in AUDIO_TYPES))
+    if value == "spice" and display_kind(root) != "spice":
+        raise ValueError("SPICE sound needs the virt-manager display")
+    audio = _audio_backend(root)
+    if audio is None:
+        audio = ET.SubElement(devices, "audio", {"id": "1", "type": value})
+    _retype(audio, value, facts)
+
+
+def _retype(audio, kind, facts):
+    """Make an audio backend another type, keeping what all types share."""
+    if audio.get("type") != kind:
+        for name in _AUDIO_OWN:
+            audio.attrib.pop(name, None)
+        for direction in ("input", "output"):
+            element = audio.find(direction)
+            if element is not None:
+                for name in _STREAM_OWN:
+                    element.attrib.pop(name, None)
+                _tidy_stream(audio, direction)
+    audio.set("type", kind)
+    if kind == "pipewire":
+        facts = session_facts() if facts is None else facts
+        if facts["runtime"]:
+            audio.set("runtimeDir", facts["runtime"])
+
+
+def _set_device(root, direction, value):
+    what = "a host output" if direction == "output" else "a host input"
+    audio = _backend_for_change(root, what)
+    if direction == "input" and _mic_value(_sound_card(root)) == "off":
+        raise ValueError("the card has no input; turn the microphone on")
+    element = _stream_element(audio, direction)
+    if value == "default":
+        element.attrib.pop("name", None)
+    else:
+        element.set("name", value)
+    _tidy_stream(audio, direction)
+
+
+def _set_latency(root, value):
+    if value != "default" and not (value.isdigit() and int(value) > 0):
+        raise ValueError("latency takes default or milliseconds")
+    audio = _backend_for_change(root, "a latency")
+    for direction in ("input", "output"):
+        element = _stream_element(audio, direction)
+        if value == "default":
+            element.attrib.pop("latency", None)
+        else:
+            element.set("latency", str(int(value) * 1000))
+        _tidy_stream(audio, direction)
+
+
+def _set_rate(root, value):
+    if value != "default" and not (value.isdigit() and int(value) > 0):
+        raise ValueError("rate takes default or a frequency in Hz")
+    devices = _devices(root)
+    if _sound_card(root) is None:
+        raise ValueError("no sound card; choose one first")
+    audio = _audio_backend(root)
+    if audio is None:
+        if value == "default":
+            return
+        audio = ET.SubElement(devices, "audio", {
+            "id": "1", "type": _default_audio(root)})
+    for direction in ("input", "output"):
+        element = _stream_element(audio, direction)
+        for settings in element.findall("settings"):
+            element.remove(settings)
+        if value == "default":
+            element.attrib.pop("fixedSettings", None)
+            element.attrib.pop("mixingEngine", None)
+        else:
+            # Fixed settings are only valid with the mixing engine on.
+            element.set("mixingEngine", "yes")
+            element.set("fixedSettings", "yes")
+            ET.SubElement(element, "settings", {"frequency": value})
+        _tidy_stream(audio, direction)
 
 
 def _set_accel(root, on):
@@ -567,17 +991,24 @@ def _set_display(root, kind, facts):
 
 
 def _ensure_audio(root, kind, facts):
+    """Give the sound a host sound system that works with display kind.
+
+    A chosen system stays, with its output, input and latency; only SPICE
+    sound, which needs the SPICE display, is replaced by the session's.
+    """
     devices = _devices(root)
-    for audio in devices.findall("audio"):
-        devices.remove(audio)
-    if kind == "spice":
-        ET.SubElement(devices, "audio", {"id": "1", "type": "spice"})
-    elif kind in OWN_WINDOW:
+    audio = _audio_backend(root)
+    if audio is None:
+        if kind == "spice":
+            ET.SubElement(devices, "audio", {"id": "1", "type": "spice"})
+        elif kind in OWN_WINDOW:
+            facts = session_facts() if facts is None else facts
+            audio = ET.SubElement(devices, "audio", {"id": "1", "type": "none"})
+            _retype(audio, facts["audio"], facts)
+        return
+    if audio.get("type") == "spice" and kind != "spice":
         facts = session_facts() if facts is None else facts
-        audio = ET.SubElement(
-            devices, "audio", {"id": "1", "type": facts["audio"]})
-        if facts["audio"] == "pipewire":
-            audio.set("runtimeDir", facts["runtime"])
+        _retype(audio, facts["audio"], facts)
 
 
 def _set_env(root, name, value):
