@@ -58,18 +58,8 @@ class Window(Gtk.Window):
         self.attached.get_style_context().add_class("convirt-meaning")
         box.pack_start(self.attached, False, False, 0)
 
-        self.extras = []
-        presets = Gtk.Box(spacing=8)
-        presets.pack_start(self.side_label("Preset"), False, False, 0)
-        for name, preset in core.PRESETS.items():
-            button = Gtk.Button(label=preset["label"])
-            button.connect("clicked", self.on_preset, name)
-            presets.pack_start(button, False, False, 0)
-            self.extras.append(button)
-        box.pack_start(presets, False, False, 0)
-
         slots = Gtk.Box(spacing=8)
-        slots.pack_start(self.side_label("Slot"), False, False, 0)
+        slots.pack_start(Gtk.Label(label="Slot"), False, False, 0)
         self.slot_picker = Gtk.ComboBoxText()
         slots.pack_start(self.slot_picker, True, True, 0)
         self.restore = Gtk.Button(label="Restore")
@@ -78,7 +68,7 @@ class Window(Gtk.Window):
         save = Gtk.Button(label="Save as…")
         save.connect("clicked", self.on_save)
         slots.pack_start(save, False, False, 0)
-        self.extras += [self.slot_picker, save]
+        self.extras = [self.slot_picker, save]
         box.pack_start(slots, False, False, 0)
 
         self.status = Gtk.Label(xalign=0)
@@ -100,11 +90,6 @@ class Window(Gtk.Window):
 
         self.connect("destroy", Gtk.main_quit)
         self.reload_list()
-
-    def side_label(self, text):
-        label = Gtk.Label(label=text, xalign=0)
-        label.set_size_request(52, -1)
-        return label
 
     def build_row(self, name):
         row = Gtk.ListBoxRow()
@@ -246,19 +231,6 @@ class Window(Gtk.Window):
             self.reload("Not changed: %s" % error)
             return
         self.reload()
-
-    def on_preset(self, _button, name):
-        label = core.PRESETS[name]["label"]
-        try:
-            skipped = self.manager.apply_preset(self.vm, name)
-        except RuntimeError as error:
-            self.reload("Not changed: %s" % error)
-            return
-        if skipped:
-            names = ", ".join(core.TITLES[s] for s in skipped)
-            self.reload("%s applied; left as it was: %s" % (label, names))
-        else:
-            self.reload("%s applied" % label)
 
     def on_restore(self, _button):
         slot = self.slot_picker.get_active_text()

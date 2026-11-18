@@ -173,32 +173,6 @@ class Manager:
             self.backend.define(vm, core.serialize(root))
         return True
 
-    def apply_preset(self, vm, name, facts=None):
-        """Apply a preset as one change. Return the switches it skipped."""
-        if name not in core.PRESETS:
-            raise RuntimeError("unknown preset: %s" % name)
-        # A system VM cannot open a window in this desktop session.
-        fixed = () if vm.session else ("display",)
-        original = self.backend.xml(vm)
-        root = core.parse(original)
-        before = core.values(root)
-        skipped = core.apply_preset(root, name, facts, fixed)
-        if core.values(root) == before:
-            return skipped
-        backup = self._save_backup(vm, original)
-        try:
-            self.backend.define(vm, core.serialize(root))
-        except RuntimeError:
-            os.remove(backup)
-            raise
-        # Same second pass as change(): re-apply on what libvirt stored.
-        root = self.stored(vm)
-        stored = core.values(root)
-        core.apply_preset(root, name, facts, fixed)
-        if core.values(root) != stored:
-            self.backend.define(vm, core.serialize(root))
-        return skipped
-
     # ------------------------------------------------------------- slots
 
     def slots(self, vm):

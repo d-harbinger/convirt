@@ -5,7 +5,6 @@
     convirt show VM               show every switch of one VM
     convirt set VM SWITCH VALUE   change one switch
     convirt undo VM               restore the config before the last change
-    convirt preset VM PRESET      apply a preset: lockdown or media
     convirt slots VM              list the saved copies of a VM's config
     convirt save VM SLOT          save the current config under a name
     convirt restore VM SLOT       put a saved config back
@@ -70,11 +69,6 @@ def main(argv=None):
         elif len(args) == 2 and args[0] == "undo":
             manager.undo(manager.find(args[1]))
             print("restored")
-        elif len(args) == 3 and args[0] == "preset":
-            skipped = manager.apply_preset(manager.find(args[1]), args[2])
-            print("applied")
-            if skipped:
-                print("left as it was: " + ", ".join(skipped))
         elif len(args) == 2 and args[0] == "slots":
             for name in manager.slots(manager.find(args[1])):
                 print(name)

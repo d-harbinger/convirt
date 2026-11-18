@@ -1,6 +1,6 @@
 # CLAUDE.md — convirt
 
-A desktop tool that shows the microphone, sound output, 3D acceleration, display, shared clipboard and network of a libvirt virtual machine as six switches, with presets and save slots, and changes them through `virsh`. MIT-licensed.
+A desktop tool that shows the microphone, sound output, 3D acceleration, display, shared clipboard and network of a libvirt virtual machine as six switches, with save slots, and changes them through `virsh`. MIT-licensed.
 
 ## Project at a glance
 

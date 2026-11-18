@@ -34,21 +34,6 @@ TITLES = {
     "network": "Network",
 }
 CLIPBOARD_CHANNEL = "com.redhat.spice.0"
-
-# A preset is a list of switch positions applied in order as one change.
-# A position the VM cannot take (no sound card to mute, say) is skipped.
-PRESETS = {
-    "lockdown": {
-        "label": "Locked down",
-        "set": (("accel3d", "off"), ("sound", "off"), ("mic", "off"),
-                ("clipboard", "off"), ("network", "off")),
-    },
-    "media": {
-        "label": "Meetings and streaming",
-        "set": (("display", "sdl"), ("accel3d", "on"), ("sound", "on"),
-                ("mic", "on"), ("network", "on")),
-    },
-}
 DISPLAY_LABELS = {
     "sdl": "Own window (SDL)",
     "gtk": "Own window (GTK)",
@@ -283,27 +268,6 @@ def exposures(root):
         if count:
             found.append("%d %s" % (count, one if count == 1 else many))
     return found
-
-
-def apply_preset(root, name, facts=None, fixed=()):
-    """Apply a preset in place. Return the switches it had to skip.
-
-    Switches named in fixed are left alone and reported as skipped.
-    """
-    if name not in PRESETS:
-        raise ValueError("unknown preset: %s" % name)
-    skipped = []
-    for switch, value in PRESETS[name]["set"]:
-        if values(root)[switch] == value:
-            continue
-        if switch in fixed:
-            skipped.append(switch)
-            continue
-        try:
-            apply(root, switch, value, facts)
-        except ValueError:
-            skipped.append(switch)
-    return skipped
 
 
 def raw_fragments(root):

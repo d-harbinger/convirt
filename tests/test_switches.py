@@ -90,39 +90,6 @@ class CoreTest(unittest.TestCase):
         self.assertEqual(core.exposures(root),
                          ["2 shared folders", "1 USB redirection port"])
 
-    def test_lockdown_preset(self):
-        root = core.parse(SPICE_VM)
-        core.apply(root, "accel3d", "on")
-        self.assertEqual(core.apply_preset(root, "lockdown"), [])
-        self.assertEqual(values(root), {
-            "mic": "off", "sound": "off", "accel3d": "off",
-            "display": "spice", "clipboard": "off", "network": "off"})
-
-    def test_lockdown_preset_keeps_an_own_window(self):
-        root = core.parse(SPICE_VM)
-        core.apply(root, "display", "gtk", WAYLAND)
-        core.apply_preset(root, "lockdown")
-        self.assertEqual(values(root)["display"], "gtk")
-        self.assertEqual(values(root)["clipboard"], "off")
-
-    def test_media_preset(self):
-        root = core.parse(SPICE_VM)
-        core.apply_preset(root, "lockdown")
-        self.assertEqual(core.apply_preset(root, "media", WAYLAND), [])
-        self.assertEqual(values(root), {
-            "mic": "on", "sound": "on", "accel3d": "on",
-            "display": "sdl", "clipboard": "off", "network": "on"})
-
-    def test_preset_skips_what_the_vm_cannot_do(self):
-        root = core.parse(SPICE_VM)
-        nothing = dict(X11, display="", xauth="")
-        self.assertEqual(core.apply_preset(root, "media", nothing),
-                         ["display"])
-        self.assertEqual(values(root)["display"], "spice")
-        self.assertEqual(values(root)["accel3d"], "on")
-        self.assertEqual(
-            core.apply_preset(core.parse(SPICE_VM), "media", WAYLAND,
-                              fixed=("display",)), ["display"])
 
     def test_microphone_off_and_on(self):
         root = core.parse(SPICE_VM)
@@ -369,18 +336,6 @@ class ManagerTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.manager.restore_slot(self.vm, "../sample")
 
-    def test_preset_is_one_undo_step(self):
-        skipped = self.manager.apply_preset(self.vm, "lockdown")
-        self.assertEqual(skipped, [])
-        state = self.manager.state(self.vm)
-        self.assertEqual(state["network"]["value"], "off")
-        self.assertEqual(state["sound"]["value"], "off")
-        self.manager.undo(self.vm)
-        with open(os.path.join(self.vms, "sample.xml")) as handle:
-            self.assertEqual(handle.read(), SPICE_VM)
-        self.assertFalse(self.manager.can_undo(self.vm))
-        with self.assertRaises(RuntimeError):
-            self.manager.apply_preset(self.vm, "bogus")
 
     def test_pending_compares_running_and_stored(self):
         with open(os.path.join(self.vms, "sample.live.xml"), "w") as handle:
