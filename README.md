@@ -1,6 +1,6 @@
 # convirt
 
-![The convirt window: rows grouped under Sound (card, microphone, host sound system, output, input, and latency and sample rate under an expander), Picture and Links to the host; a green line confirms a change of host sound to PipeWire, the changed row is marked as waiting for a full restart, and an amber line offers Restart to apply](docs/screenshot.png)
+![The convirt window: rows grouped under Sound (card, microphone, host sound system, output, input, and latency and sample rate under an expander), Picture and Links to the host; a green line confirms a change of host sound to PipeWire, the changed row is marked as waiting for a full shut down and start, and an amber line offers Shut down and start](docs/screenshot.png)
 
 convirt shows the sound, display and host-link settings of a libvirt virtual machine as a short list of rows, and changes them without hand-editing XML. Save slots keep exact copies of a configuration.
 
@@ -18,7 +18,7 @@ convirt shows the sound, display and host-link settings of a libvirt virtual mac
 | Shared clipboard | on, off | Whether host and guest share the clipboard. Only the virt-manager display has one. |
 | Network | unplugged, or a connection | What the network card is plugged into: a libvirt network, a host bridge, macvtap on a wired host interface, or user-mode networking. The list holds what the host has. |
 
-Each row states what its current value means, from the definition and from what the host has: the microphone row says what the guest's input hears, and a row that does not apply to the chosen sound system or card is shown fixed with the reason. A change is stored at once and takes effect at the next full shut off and start of the VM. Two lines under the rows hold their place: the first confirms the last change in green (red when it failed) with **Undo**, then fades to grey; the second says whether the running VM matches. While a VM runs, a changed row is marked "after restart" and says what runs now and what the next start brings, and the second line offers **Restart to apply**: convirt asks the guest to shut down, as its power button would, waits up to a minute (then offers Force off), and starts it again. **Start**, **Shut down** and **Open** (the VM's screen in virt-viewer or virt-manager) sit beside the VM's name, so the whole round trip happens in one window.
+Each row states what its current value means, from the definition and from what the host has: the microphone row says what the guest's input hears, and a row that does not apply to the chosen sound system or card is shown fixed with the reason. A change is stored at once and takes effect at the next full shut off and start of the VM. Two lines under the rows hold their place: the first confirms the last change in green (red when it failed) with **Undo**, then fades to grey; the second says whether the running VM matches. While a VM runs, a changed row is marked "at next start" and says what runs now and what the next start brings, and the second line offers **Shut down and start**: convirt asks the guest to shut down, as its power button would, waits up to a minute (then offers Force off), and starts it again. **Start**, **Shut down** and **Open** (the VM's screen in virt-viewer or virt-manager) sit beside the VM's name, so the whole round trip happens in one window.
 
 ## Does 3D work?
 

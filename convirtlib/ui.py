@@ -177,7 +177,7 @@ class Window(Gtk.Window):
         self.waiting_text = Gtk.Label(xalign=0)
         self.waiting_text.set_ellipsize(Pango.EllipsizeMode.END)
         self.waiting.pack_start(self.waiting_text, True, True, 0)
-        self.apply_button = Gtk.Button(label="Restart to apply")
+        self.apply_button = Gtk.Button(label="Shut down and start")
         self.apply_button.get_style_context().add_class("suggested-action")
         self.apply_button.set_valign(Gtk.Align.CENTER)
         self.apply_button.set_no_show_all(True)
@@ -251,7 +251,7 @@ class Window(Gtk.Window):
         title = Gtk.Label(label=core.TITLES[name], xalign=0)
         title.get_style_context().add_class("convirt-title")
         titles.pack_start(title, False, False, 0)
-        badge = Gtk.Label(label="after restart")
+        badge = Gtk.Label(label="at next start")
         badge.get_style_context().add_class("convirt-badge")
         badge.set_no_show_all(True)
         titles.pack_start(badge, False, False, 0)
@@ -467,7 +467,7 @@ class Window(Gtk.Window):
         self.undo.set_sensitive(self.manager.can_undo(self.vm))
         style = self.waiting.get_style_context()
         if pending:
-            text = "%s for a full shut down and start: %s" % (
+            text = "%s: %s" % (
                 "1 change waits" if len(pending) == 1
                 else "%d changes wait" % len(pending),
                 ", ".join(core.TITLES[n] for n in pending))
@@ -581,7 +581,9 @@ class Window(Gtk.Window):
         self.picker.set_sensitive(False)
         self.reload()
         self.announce("Shutting down " + self.vm.label,
-                      "Waiting for the guest to power off")
+                      "Waiting for the guest to power off; then it starts "
+                      "again" if start_after
+                      else "Waiting for the guest to power off")
         GLib.timeout_add_seconds(1, self.poll_shutdown)
 
     def poll_shutdown(self):
