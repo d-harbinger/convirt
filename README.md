@@ -1,5 +1,7 @@
 # VM switches
 
+![The VM switches window: five switches for one virtual machine, with a line saying what each state means](docs/screenshot.png)
+
 VM switches shows the security- and display-relevant settings of a libvirt virtual machine as five switches, and changes them without hand-editing XML.
 
 | Switch | Values | What it controls |
@@ -29,22 +31,27 @@ The tool installs nothing, needs no root, and runs on the machine that hosts the
 ## Run
 
 ```sh
+git clone https://github.com/d-harbinger/vm-switches.git
+cd vm-switches
 ./vm-switches
 ```
 
-To add it to the application menu:
+To add it to the application menu, and to take it out again:
 
 ```sh
 sh install.sh
+sh install.sh --remove
 ```
+
+The menu entry points at the cloned folder, so the folder has to stay where it is.
 
 The same switches work from a shell:
 
 ```sh
 ./vm-switches list
-./vm-switches show fedora
-./vm-switches set fedora mic off
-./vm-switches undo fedora
+./vm-switches show workstation
+./vm-switches set workstation mic off
+./vm-switches undo workstation
 ```
 
 `mic`, `sound`, `accel3d` and `network` take `on` or `off`. `display` takes `sdl`, `gtk` or `spice`.
@@ -72,3 +79,7 @@ python3 -m unittest discover -s tests
 ```
 
 The tests cover the switch logic and the change and undo flow on sample definitions. They do not start a VM.
+
+## License
+
+MIT. See `LICENSE`.
