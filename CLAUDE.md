@@ -1,18 +1,18 @@
-# CLAUDE.md — vm-switches
+# CLAUDE.md — convirt
 
 A desktop tool that shows the microphone, sound output, 3D acceleration, display and network of a libvirt virtual machine as five switches, and changes them through `virsh`. MIT-licensed.
 
 ## Project at a glance
 
 - **Stack**: Python 3.9+ standard library, plus GTK 3 through PyGObject for the window. There are no pip dependencies and no virtual environment.
-- **Modules**: `vmswitches/core.py` reads and edits a domain definition as an ElementTree and touches neither libvirt nor the screen. `vmswitches/manager.py` runs `virsh`, keeps the backups and applies changes. `vmswitches/ui.py` is the window. `vmswitches/cli.py` parses the command line. `vm-switches` is the launcher.
-- **State**: previous definitions for undo, under `~/.local/state/vm-switches/`, mode 0600. Nothing else is stored.
+- **Modules**: `convirtlib/core.py` reads and edits a domain definition as an ElementTree and touches neither libvirt nor the screen. `convirtlib/manager.py` runs `virsh`, keeps the backups and applies changes. `convirtlib/ui.py` is the window. `convirtlib/cli.py` parses the command line. `convirt` is the launcher.
+- **State**: previous definitions for undo, under `~/.local/state/convirt/`, mode 0600. Nothing else is stored.
 
 ## Run, install, test
 
 | Task | Command |
 |---|---|
-| Run | `./vm-switches` (window) or `./vm-switches list` |
+| Run | `./convirt` (window) or `./convirt list` |
 | Menu entry | `sh install.sh`, removed with `sh install.sh --remove` |
 | Tests | `python3 -m unittest discover -s tests` |
 

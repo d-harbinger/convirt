@@ -6,8 +6,8 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from vmswitches import core  # noqa: E402
-from vmswitches.manager import Files, Manager  # noqa: E402
+from convirtlib import core  # noqa: E402
+from convirtlib.manager import Files, Manager  # noqa: E402
 
 SPICE_VM = """
 <domain type='kvm'>

@@ -1,10 +1,10 @@
 """Command line: open the window, or read and flip switches from a shell.
 
-    vm-switches                       open the window
-    vm-switches list                  list the VMs
-    vm-switches show VM               show every switch of one VM
-    vm-switches set VM SWITCH VALUE   change one switch
-    vm-switches undo VM               restore the config before the last change
+    convirt                       open the window
+    convirt list                  list the VMs
+    convirt show VM               show every switch of one VM
+    convirt set VM SWITCH VALUE   change one switch
+    convirt undo VM               restore the config before the last change
 
 Switches: mic, sound, accel3d, network take on or off; display takes
 sdl, gtk or spice. A change is stored at once and takes effect at the next
@@ -39,7 +39,7 @@ def main(argv=None):
                 from . import ui
             except (ImportError, ValueError):
                 print("The window needs GTK 3 for Python (PyGObject).")
-                print("The commands still work: vm-switches list")
+                print("The commands still work: convirt list")
                 return 1
             ui.run(manager, snapshot)
         elif args == ["list"]:

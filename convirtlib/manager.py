@@ -104,7 +104,7 @@ class Files:
 def state_dir():
     base = os.environ.get("XDG_STATE_HOME") \
         or os.path.expanduser("~/.local/state")
-    return os.path.join(base, "vm-switches")
+    return os.path.join(base, "convirt")
 
 
 class Manager:

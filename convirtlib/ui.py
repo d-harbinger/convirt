@@ -7,16 +7,16 @@ from gi.repository import GLib, Gtk, Pango  # noqa: E402
 from . import core  # noqa: E402
 
 CSS = b"""
-.vmsw-title { font-weight: bold; }
-.vmsw-meaning { opacity: 0.7; font-size: 90%; }
-.vmsw-row { padding: 10px 12px; }
-.vmsw-status { opacity: 0.8; }
+.convirt-title { font-weight: bold; }
+.convirt-meaning { opacity: 0.7; font-size: 90%; }
+.convirt-row { padding: 10px 12px; }
+.convirt-status { opacity: 0.8; }
 """
 
 
 class Window(Gtk.Window):
     def __init__(self, manager):
-        super().__init__(title="VM switches")
+        super().__init__(title="convirt")
         self.manager = manager
         self.vms = []
         self.vm = None
@@ -41,7 +41,7 @@ class Window(Gtk.Window):
         self.picker.connect("changed", self.on_pick)
         header.pack_start(self.picker, False, False, 0)
         self.running = Gtk.Label()
-        self.running.get_style_context().add_class("vmsw-status")
+        self.running.get_style_context().add_class("convirt-status")
         header.pack_end(self.running, False, False, 0)
         box.pack_start(header, False, False, 0)
 
@@ -55,7 +55,7 @@ class Window(Gtk.Window):
 
         self.status = Gtk.Label(xalign=0)
         self.status.set_line_wrap(True)
-        self.status.get_style_context().add_class("vmsw-status")
+        self.status.get_style_context().add_class("convirt-status")
         box.pack_start(self.status, False, False, 0)
 
         buttons = Gtk.Box(spacing=8)
@@ -77,13 +77,13 @@ class Window(Gtk.Window):
         row = Gtk.ListBoxRow()
         row.set_activatable(False)
         line = Gtk.Box(spacing=12)
-        line.get_style_context().add_class("vmsw-row")
+        line.get_style_context().add_class("convirt-row")
         text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         title = Gtk.Label(label=core.TITLES[name], xalign=0)
-        title.get_style_context().add_class("vmsw-title")
+        title.get_style_context().add_class("convirt-title")
         meaning = Gtk.Label(xalign=0)
         meaning.set_ellipsize(Pango.EllipsizeMode.END)
-        meaning.get_style_context().add_class("vmsw-meaning")
+        meaning.get_style_context().add_class("convirt-meaning")
         text.pack_start(title, False, False, 0)
         text.pack_start(meaning, False, False, 0)
         line.pack_start(text, True, True, 0)

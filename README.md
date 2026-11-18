@@ -1,8 +1,8 @@
-# VM switches
+# convirt
 
-![The VM switches window: five switches for one virtual machine, with a line saying what each state means](docs/screenshot.png)
+![The convirt window: five switches for one virtual machine, with a line saying what each state means](docs/screenshot.png)
 
-VM switches shows the security- and display-relevant settings of a libvirt virtual machine as five switches, and changes them without hand-editing XML.
+convirt shows the security- and display-relevant settings of a libvirt virtual machine as five switches, and changes them without hand-editing XML.
 
 | Switch | Values | What it controls |
 |---|---|---|
@@ -31,9 +31,9 @@ The tool installs nothing, needs no root, and runs on the machine that hosts the
 ## Run
 
 ```sh
-git clone https://github.com/d-harbinger/vm-switches.git
-cd vm-switches
-./vm-switches
+git clone https://github.com/d-harbinger/convirt.git
+cd convirt
+./convirt
 ```
 
 To add it to the application menu, and to take it out again:
@@ -48,10 +48,10 @@ The menu entry points at the cloned folder, so the folder has to stay where it i
 The same switches work from a shell:
 
 ```sh
-./vm-switches list
-./vm-switches show workstation
-./vm-switches set workstation mic off
-./vm-switches undo workstation
+./convirt list
+./convirt show workstation
+./convirt set workstation mic off
+./convirt undo workstation
 ```
 
 `mic`, `sound`, `accel3d` and `network` take `on` or `off`. `display` takes `sdl`, `gtk` or `spice`.
@@ -60,7 +60,7 @@ The same switches work from a shell:
 
 Every change reads the stored definition of the VM, edits it, saves the previous definition, and hands the new one to libvirt. If libvirt rejects it, the stored definition stays as it was.
 
-- **Undo.** The previous definitions are kept in `~/.local/state/vm-switches/`, readable only by the owner, twenty per VM. Undo restores the newest one.
+- **Undo.** The previous definitions are kept in `~/.local/state/convirt/`, readable only by the owner, twenty per VM. Undo restores the newest one.
 - **Own window.** Both kinds remove the SPICE display and the devices that only exist with it (shared clipboard channel, USB redirection), point audio at PipeWire or PulseAudio, and pass the desktop session's display name to QEMU. Run the tool inside the desktop session so it can read that name.
 - **SDL or GTK.** The two kinds differ in how they take the pointer. The SDL window holds the pointer whenever it is inside the window and lets go when it touches the window edge. The GTK window holds it only after a click. In both, Ctrl+Alt+G releases it. libvirt has no GTK display type, so the tool passes it to QEMU as a raw `-display` argument; whether the GTK window shows a picture with 3D on depends on the host's graphics driver.
 - **virt-manager.** This display uses a private socket, not a TCP port, and restores the shared clipboard channel.
