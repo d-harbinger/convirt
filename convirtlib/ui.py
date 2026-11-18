@@ -49,6 +49,19 @@ CAUTION_ICONS = {"caution": "dialog-warning-symbolic",
                  "note": "dialog-information-symbolic"}
 
 
+def drop_down():
+    """A list chooser whose menu opens below it.
+
+    A plain GTK 3 combo box lays its menu over itself with the chosen item
+    on top of the button, so the list opens in the middle and, on Wayland,
+    often shows only scroll arrows until the pointer moves. With a wrap
+    width set, GTK opens the menu below the button instead.
+    """
+    control = Gtk.ComboBoxText()
+    control.set_wrap_width(1)
+    return control
+
+
 def caution_icon():
     """A small icon whose hover says what a setting opens; hidden until a
     row's value opens something."""
@@ -149,7 +162,7 @@ class Window(Gtk.Window):
 
         header = Gtk.Box(spacing=10)
         header.pack_start(Gtk.Label(label="VM"), False, False, 0)
-        self.picker = Gtk.ComboBoxText()
+        self.picker = drop_down()
         self.picker.connect("changed", self.on_pick)
         header.pack_start(self.picker, False, False, 0)
         # Which connection the VM is on says who QEMU runs as.
@@ -231,7 +244,7 @@ class Window(Gtk.Window):
 
         slots = Gtk.Box(spacing=8)
         slots.pack_start(Gtk.Label(label="Slot"), False, False, 0)
-        self.slot_picker = Gtk.ComboBoxText()
+        self.slot_picker = drop_down()
         slots.pack_start(self.slot_picker, True, True, 0)
         self.restore = Gtk.Button(label="Restore")
         self.restore.connect("clicked", self.on_restore)
@@ -321,7 +334,7 @@ class Window(Gtk.Window):
             control = Gtk.Switch()
             control.connect("notify::active", self.on_switch, name)
         else:
-            control = Gtk.ComboBoxText()
+            control = drop_down()
             # Long host device names would widen the window; they are cut
             # in the list and said in full on the row's line.
             cell = control.get_cells()[0]
